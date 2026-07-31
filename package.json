@@ -1,0 +1,19 @@
+{
+  "name": "forex-trading-server",
+  "version": "0.1.0",
+  "description": "Automated Deriv/Forex trading server: demo strategy trials, promotion to live, risk-managed 24/7 execution",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
