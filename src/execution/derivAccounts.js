@@ -80,6 +80,10 @@ async function getConnectUrl(token, wantDemo) {
     logEvent({ type: 'deriv_otp_failed', status: res.status, body });
     throw new Error(`Failed to get Deriv OTP: ${res.status} — ${JSON.stringify(body)}`);
   }
+  logEvent({ type: 'deriv_otp_response', body });
+  if (!body.url) {
+    throw new Error(`OTP response had no 'url' field: ${JSON.stringify(body)}`);
+  }
   return body.url;
 }
 
