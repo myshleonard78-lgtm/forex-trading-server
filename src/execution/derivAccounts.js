@@ -81,10 +81,11 @@ async function getConnectUrl(token, wantDemo) {
     throw new Error(`Failed to get Deriv OTP: ${res.status} — ${JSON.stringify(body)}`);
   }
   logEvent({ type: 'deriv_otp_response', body });
-  if (!body.url) {
-    throw new Error(`OTP response had no 'url' field: ${JSON.stringify(body)}`);
+  const url = body.data && body.data.url;
+  if (!url) {
+    throw new Error(`OTP response had no 'data.url' field: ${JSON.stringify(body)}`);
   }
-  return body.url;
+  return url;
 }
 
 module.exports = { listAccounts, pickAccount, getConnectUrl };
