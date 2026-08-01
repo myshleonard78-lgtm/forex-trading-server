@@ -2,13 +2,14 @@ require('dotenv').config();
 
 module.exports = {
   deriv: {
-    appId: process.env.DERIV_APP_ID,
-    // Optional fallback if you ever want to test with a manually-pasted PAT
-    // instead of going through /auth/login. Normal operation uses tokens
-    // saved by the OAuth callback (see src/auth/tokenStore.js) instead.
+    appId: process.env.DERIV_APP_ID, // your alphanumeric App ID from developers.deriv.com
+    // PAT (Personal Access Token) from app.deriv.com/account/api-token — the
+    // supported auth method for the new API that doesn't expire hourly like
+    // OAuth access tokens do. Generate one against your DEMO account.
     token: process.env.DERIV_API_TOKEN || null,
-    wsUrl: process.env.DERIV_WS_URL || 'wss://ws.derivws.com/websockets/v3',
-    oauthLoginUrl: 'https://oauth.deriv.com/oauth2/authorize',
+    // New API base — REST for account discovery + OTP, WS reached via a
+    // per-account OTP URL (see src/execution/derivAccounts.js)
+    restBase: process.env.DERIV_REST_BASE || 'https://api.derivws.com/trading/v1/options',
   },
   mode: process.env.TRADING_MODE || 'demo', // 'demo' | 'live'
   risk: {
