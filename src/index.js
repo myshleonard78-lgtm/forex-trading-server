@@ -13,10 +13,21 @@ const { sendWhatsAppMessage } = require('./notifications/whatsapp');
 const { scheduleDailySummary } = require('./notifications/dailySummary');
 
 async function main() {
+  let riskManagerRef = null;
+
+  // Safety net: an unhandled rejection anywhere should never silently kill
+  // a 24/7 trading process. Log it and halt trading rather than crash —
+  // crashing meant Render kept restarting into the same failure on a loop.
+  process.on('unhandledRejection', (reason) => {
+    logEvent({ type: 'unhandled_rejection', reason });
+    if (riskManagerRef) riskManagerRef.haltTrading('unhandled rejection — see decision log');
+  });
+
   const startingBalance =
     config.mode === 'live' ? config.risk.liveStartBalance : 10000; // demo balance per Deriv's default
 
   const riskManager = new RiskManager(startingBalance);
+  riskManagerRef = riskManager;
   const trialManager = new TrialManager();
 
   // Safety check run on every reconnect, before resuming anything else
