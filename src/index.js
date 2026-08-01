@@ -5,8 +5,6 @@ const PriceFeed = require('./data/priceFeed');
 const RiskManager = require('./risk/riskManager');
 const { TrialManager } = require('./trials/trialManager');
 const { startControlServer, listen } = require('./killswitch/killSwitch');
-const { registerAuthRoutes } = require('./auth/oauthLogin');
-const tokenStore = require('./auth/tokenStore');
 const { logEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
 const { sendWhatsAppMessage } = require('./notifications/whatsapp');
@@ -37,36 +35,35 @@ async function main() {
     // TODO: re-verify each open contract still has its stop-loss condition tracked
   };
 
-  // Pulls whichever token is currently linked as the demo account. Once
-  // /auth/login → /auth/callback has run once, this always resolves to the
-  // right one — no manual "which account was active" guessing.
-  const getActiveToken = () =>
-    config.mode === 'live' ? tokenStore.getRealToken() : tokenStore.getDemoToken();
+  // PAT-based auth (see src/execution/derivAccounts.js) — no login flow
+  // needed; the same token is used to discover accounts and request a
+  // fresh OTP connect URL on every (re)connect.
+  const getToken = () => config.deriv.token;
 
   const onAuthFailed = (reason, err) => {
-    logEvent({ type: 'auth_failed_needs_relogin', reason, err, loginUrl: '/auth/login' });
-    riskManager.haltTrading('deriv auth failed — re-login required at /auth/login');
+    logEvent({ type: 'auth_failed', reason, err });
+    riskManager.haltTrading(`deriv auth failed (${reason}) — check DERIV_API_TOKEN`);
     sendWhatsAppMessage(
-      `⚠️ Trading halted: Deriv login stopped working (${reason}). ` +
-        `Visit /auth/login on your server to reconnect, then reply "resume" once done.`
+      `⚠️ Trading halted: Deriv connection failed (${reason}). Check the DERIV_API_TOKEN ` +
+        `environment variable is set to a valid PAT for your demo account.`
     );
   };
 
   const deriv = new DerivClient({
     onOpenPositionsRecheck: reattachOpenPositions,
-    getToken: getActiveToken,
+    getToken,
     onAuthFailed,
+    wantDemo: config.mode !== 'live',
   });
   deriv.connect();
 
   const controlApp = startControlServer(riskManager);
-  registerAuthRoutes(controlApp);
   listen(controlApp);
 
-  if (!tokenStore.getDemoToken()) {
+  if (!config.deriv.token) {
     console.log(
-      `No demo account linked yet. Visit http://localhost:${config.killSwitch.port}/auth/login ` +
-        `(or your deployed URL) to log in and link your Deriv demo account.`
+      'No DERIV_API_TOKEN set. Generate a PAT for your demo account at ' +
+        'app.deriv.com/account/api-token and set it as an environment variable.'
     );
   }
 
@@ -107,12 +104,12 @@ async function main() {
   // One TradeExecutor per strategy: subscribes to its symbol's ticks, computes
   // indicators via the shared price feed, asks the strategy for a signal, and
   // (if risk/news checks pass) places and tracks a real trade through to
-  // settlement. Started once authorize() has succeeded so we're not
-  // subscribing on a connection that isn't actually logged in yet.
+  // settlement. Started once the OTP-based connection is live so we're not
+  // subscribing before we're actually authenticated.
   const priceFeed = new PriceFeed();
   let executorsStarted = false;
 
-  deriv.on('authorize', () => {
+  deriv.on('connected', () => {
     if (executorsStarted) return; // avoid duplicate subscriptions on reconnect
     executorsStarted = true;
 
