@@ -2,25 +2,36 @@ const WebSocket = require('ws');
 const EventEmitter = require('events');
 const config = require('../config');
 const { logEvent } = require('../logging/decisionLog');
+const { getConnectUrl } = require('./derivAccounts');
 
 /**
- * Thin wrapper around the Deriv WebSocket API.
- * Docs: https://api.deriv.com  (app registration required for a real app_id)
+ * Thin wrapper around Deriv's new API (developers.deriv.com).
+ * Docs: https://developers.deriv.com
+ *
+ * Connection model: unlike the old API (connect with app_id, then send an
+ * "authorize" message), the new API authenticates via a one-time password
+ * (OTP) baked into the WebSocket URL itself. That URL is fetched fresh via
+ * REST (using a PAT) on every single connect — OTPs are short-lived and
+ * single-use, so it can never be cached across reconnects.
+ *
+ * Once connected via the OTP URL, the session is already authenticated —
+ * no separate "authorize" message needed. The actual trading message
+ * protocol (ticks, proposal, buy, proposal_open_contract, sell) is the same
+ * JSON-RPC-style shape as the old API.
  *
  * Handles:
- *  - connect + authorize
+ *  - fetching a fresh OTP connect URL + connecting on every (re)connect
  *  - auto-reconnect with exponential backoff (capped)
  *  - re-checking open positions immediately after reconnect, before
  *    accepting any new trade signals (safety before speed)
  */
 class DerivClient extends EventEmitter {
   /**
-   * @param {Function} getToken - returns the current token to authorize with
-   *   (e.g. tokenStore.getDemoToken). Called fresh on every (re)connect, so
-   *   swapping the underlying token (after a re-login) takes effect on the
-   *   next reconnect without restarting the process.
+   * @param {Function} getToken - returns the PAT to use for account
+   *   discovery + OTP requests (e.g. () => config.deriv.token).
+   * @param {boolean} wantDemo - true for the demo account, false for real.
    */
-  constructor({ onOpenPositionsRecheck, getToken, onAuthFailed } = {}) {
+  constructor({ onOpenPositionsRecheck, getToken, onAuthFailed, wantDemo = true } = {}) {
     super();
     this.ws = null;
     this.reqId = 1;
@@ -30,27 +41,43 @@ class DerivClient extends EventEmitter {
     this.onOpenPositionsRecheck = onOpenPositionsRecheck || (async () => {});
     this.getToken = getToken || (() => config.deriv.token);
     this.onAuthFailed = onAuthFailed || (() => {});
+    this.wantDemo = wantDemo;
     this.authorized = false;
   }
 
-  connect() {
-    const url = `${config.deriv.wsUrl}?app_id=${config.deriv.appId}`;
+  async connect() {
+    const token = this.getToken();
+    if (!token) {
+      logEvent({ type: 'no_token_available' });
+      this.onAuthFailed('no_token');
+      return;
+    }
+
+    let url;
+    try {
+      url = await getConnectUrl(token, this.wantDemo);
+    } catch (err) {
+      logEvent({ type: 'connect_url_failed', error: String(err) });
+      this.authorized = false;
+      this.onAuthFailed('connect_url_failed', err);
+      // Still retry later — a transient Deriv API hiccup shouldn't be fatal
+      setTimeout(() => this.connect(), this.backoffMs);
+      this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
+      return;
+    }
+
     this.ws = new WebSocket(url);
 
     this.ws.on('open', async () => {
       this.backoffMs = 1000; // reset backoff on a clean connect
+      this.authorized = true; // OTP-based connection is already authenticated
       logEvent({ type: 'ws_connected' });
-      await this.authorize();
+      this.emit('connected');
 
-      // Only safe to check open positions if we're actually authorized —
-      // otherwise Deriv rejects the request and, if unhandled, that used to
-      // crash the whole process. Wrapped in try/catch as a second safety net.
-      if (this.authorized) {
-        try {
-          await this.onOpenPositionsRecheck();
-        } catch (err) {
-          logEvent({ type: 'position_recheck_failed', error: err });
-        }
+      try {
+        await this.onOpenPositionsRecheck();
+      } catch (err) {
+        logEvent({ type: 'position_recheck_failed', error: err });
       }
     });
 
@@ -90,27 +117,6 @@ class DerivClient extends EventEmitter {
       this.pending.set(req_id, { resolve, reject });
       this.ws.send(JSON.stringify({ ...payload, req_id }));
     });
-  }
-
-  async authorize() {
-    const token = this.getToken();
-    if (!token) {
-      logEvent({ type: 'no_token_available' });
-      this.onAuthFailed('no_token');
-      return null;
-    }
-    try {
-      const res = await this._send({ authorize: token });
-      this.authorized = true;
-      return res;
-    } catch (err) {
-      // Token missing, revoked, or (if Deriv ever expires OAuth-issued
-      // tokens) expired — either way, surface it instead of retrying blind.
-      logEvent({ type: 'authorize_failed', error: err });
-      this.authorized = false;
-      this.onAuthFailed('rejected', err);
-      return null;
-    }
   }
 
   /** Subscribe to live tick stream for a symbol, e.g. 'R_100' for a Deriv synthetic index */
