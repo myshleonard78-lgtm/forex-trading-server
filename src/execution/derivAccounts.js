@@ -18,10 +18,16 @@ async function listAccounts(token) {
       'Deriv-App-ID': config.deriv.appId,
     },
   });
-  const body = await res.json();
+  const rawText = await res.text();
+  let body;
+  try {
+    body = JSON.parse(rawText);
+  } catch {
+    body = rawText; // non-JSON error page — surface it as-is rather than crash
+  }
   if (!res.ok) {
     logEvent({ type: 'deriv_accounts_fetch_failed', status: res.status, body });
-    throw new Error(`Failed to list Deriv accounts: ${res.status}`);
+    throw new Error(`Failed to list Deriv accounts: ${res.status} — ${JSON.stringify(body)}`);
   }
   return body;
 }
@@ -63,10 +69,16 @@ async function getConnectUrl(token, wantDemo) {
       'Deriv-App-ID': config.deriv.appId,
     },
   });
-  const body = await res.json();
+  const rawText = await res.text();
+  let body;
+  try {
+    body = JSON.parse(rawText);
+  } catch {
+    body = rawText;
+  }
   if (!res.ok) {
     logEvent({ type: 'deriv_otp_failed', status: res.status, body });
-    throw new Error(`Failed to get Deriv OTP: ${res.status}`);
+    throw new Error(`Failed to get Deriv OTP: ${res.status} — ${JSON.stringify(body)}`);
   }
   return body.url;
 }
