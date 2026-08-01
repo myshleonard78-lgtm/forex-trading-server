@@ -41,9 +41,17 @@ class DerivClient extends EventEmitter {
       this.backoffMs = 1000; // reset backoff on a clean connect
       logEvent({ type: 'ws_connected' });
       await this.authorize();
-      // Safety first: re-verify open positions / stop-loss state before
-      // resuming anything else.
-      await this.onOpenPositionsRecheck();
+
+      // Only safe to check open positions if we're actually authorized —
+      // otherwise Deriv rejects the request and, if unhandled, that used to
+      // crash the whole process. Wrapped in try/catch as a second safety net.
+      if (this.authorized) {
+        try {
+          await this.onOpenPositionsRecheck();
+        } catch (err) {
+          logEvent({ type: 'position_recheck_failed', error: err });
+        }
+      }
     });
 
     this.ws.on('message', (raw) => this._handleMessage(raw));
