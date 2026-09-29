@@ -6,9 +6,7 @@ const { logEvent } = require('../logging/decisionLog');
  * symbol, feeds them through the price feed's indicators, asks the strategy
  * for a signal, and — if conditions allow — places and tracks a real trade.
  *
- * Deliberately allows only ONE open position per strategy at a time. Running
- * several strategies just means several TradeExecutor instances, each with
- * its own open-position flag, so they don't block each other.
+ * Allows only ONE open position per strategy at a time.
  */
 class TradeExecutor {
   constructor({ strategy, deriv, priceFeed, riskManager, trialManager, defaultStake }) {
@@ -29,10 +27,10 @@ class TradeExecutor {
 
       this.priceFeed.addTick(this.strategy.symbol, Number(msg.tick.quote));
 
-      if (this.hasOpenPosition) return; // one open trade at a time per strategy
+      if (this.hasOpenPosition) return;
 
       const marketData = this.priceFeed.getMarketData(this.strategy.symbol);
-      if (!marketData) return; // not enough price history yet
+      if (!marketData) return;
 
       const signal = this.strategy.signal(marketData);
       if (signal === 'hold') return;
@@ -43,7 +41,7 @@ class TradeExecutor {
 
   async _tryEnterTrade(signal) {
     if (!this.riskManager.canTrade()) {
-      return; // halted, or daily loss limit hit
+      return;
     }
     if (await isInNewsBlackout(this.strategy.symbol)) {
       logEvent({ type: 'trade_skipped_news_blackout', strategyId: this.strategy.id });
@@ -51,7 +49,7 @@ class TradeExecutor {
     }
 
     const stake = this.riskManager.getPositionSize();
-    if (stake <= 0) return; // no allowance left today
+    if (stake <= 0) return;
 
     try {
       this.hasOpenPosition = true;
@@ -59,7 +57,7 @@ class TradeExecutor {
       const contractType = signal === 'buy' ? 'CALL' : 'PUT';
       const proposalRes = await this.deriv.getProposal({
         contract_type: contractType,
-        symbol: this.strategy.symbol,
+        underlying_symbol: this.strategy.symbol, // renamed from 'symbol' in the new API
         amount: stake,
         basis: 'stake',
         duration: 5,
@@ -91,7 +89,7 @@ class TradeExecutor {
     const handler = (msg) => {
       const poc = msg.proposal_open_contract;
       if (!poc || poc.contract_id !== contractId) return;
-      if (!poc.is_sold) return; // still open, keep listening
+      if (!poc.is_sold) return;
 
       const pnl = Number(poc.profit);
       this.riskManager.recordTradeResult(pnl);
