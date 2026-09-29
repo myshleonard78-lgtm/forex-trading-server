@@ -6,30 +6,21 @@ const { getConnectUrl } = require('./derivAccounts');
 
 /**
  * Thin wrapper around Deriv's new API (developers.deriv.com).
- * Docs: https://developers.deriv.com
  *
- * Connection model: unlike the old API (connect with app_id, then send an
- * "authorize" message), the new API authenticates via a one-time password
- * (OTP) baked into the WebSocket URL itself. That URL is fetched fresh via
- * REST (using a PAT) on every single connect — OTPs are short-lived and
- * single-use, so it can never be cached across reconnects.
+ * Connection model: authenticates via a one-time password (OTP) baked into
+ * the WebSocket URL, fetched fresh via REST (using a PAT) on every single
+ * connect — OTPs are short-lived and single-use, so never cached across
+ * reconnects.
  *
- * Once connected via the OTP URL, the session is already authenticated —
- * no separate "authorize" message needed. The actual trading message
- * protocol (ticks, proposal, buy, proposal_open_contract, sell) is the same
- * JSON-RPC-style shape as the old API.
- *
- * Handles:
- *  - fetching a fresh OTP connect URL + connecting on every (re)connect
- *  - auto-reconnect with exponential backoff (capped)
- *  - re-checking open positions immediately after reconnect, before
- *    accepting any new trade signals (safety before speed)
+ * Trading message protocol (ticks, proposal, buy, proposal_open_contract,
+ * sell) is the same JSON-RPC-style shape as the old API.
  */
 class DerivClient extends EventEmitter {
   /**
    * @param {Function} getToken - returns the PAT to use for account
-   *   discovery + OTP requests (e.g. () => config.deriv.token).
+   *   discovery + OTP requests.
    * @param {boolean} wantDemo - true for the demo account, false for real.
+   *   Mutable at runtime via switchTarget().
    */
   constructor({ onOpenPositionsRecheck, getToken, onAuthFailed, wantDemo = true } = {}) {
     super();
@@ -43,6 +34,7 @@ class DerivClient extends EventEmitter {
     this.onAuthFailed = onAuthFailed || (() => {});
     this.wantDemo = wantDemo;
     this.authorized = false;
+    this._switching = false; // suppresses normal backoff delay during a deliberate switch
   }
 
   async connect() {
@@ -60,7 +52,6 @@ class DerivClient extends EventEmitter {
       logEvent({ type: 'connect_url_failed', error: String(err) });
       this.authorized = false;
       this.onAuthFailed('connect_url_failed', err);
-      // Still retry later — a transient Deriv API hiccup shouldn't be fatal
       setTimeout(() => this.connect(), this.backoffMs);
       this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
       return;
@@ -69,9 +60,9 @@ class DerivClient extends EventEmitter {
     this.ws = new WebSocket(url);
 
     this.ws.on('open', async () => {
-      this.backoffMs = 1000; // reset backoff on a clean connect
-      this.authorized = true; // OTP-based connection is already authenticated
-      logEvent({ type: 'ws_connected' });
+      this.backoffMs = 1000;
+      this.authorized = true;
+      logEvent({ type: 'ws_connected', account: this.wantDemo ? 'demo' : 'real' });
       this.emit('connected');
 
       try {
@@ -86,14 +77,32 @@ class DerivClient extends EventEmitter {
     this.ws.on('close', () => {
       logEvent({ type: 'ws_closed', backoffMs: this.backoffMs });
       this.authorized = false;
-      setTimeout(() => this.connect(), this.backoffMs);
+      const delay = this._switching ? 500 : this.backoffMs;
+      this._switching = false;
+      setTimeout(() => this.connect(), delay);
       this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
     });
 
     this.ws.on('error', (err) => {
       logEvent({ type: 'ws_error', message: err.message });
-      // 'close' fires after 'error' — reconnect handled there
     });
+  }
+
+  /**
+   * Switch which account (demo/live) this client trades on. Closes the
+   * current connection so it reconnects fresh against the new account's
+   * OTP — no new token needed, since one PAT can see both accounts.
+   */
+  switchTarget(wantDemo) {
+    if (wantDemo === this.wantDemo) return;
+    logEvent({ type: 'mode_switch_requested', to: wantDemo ? 'demo' : 'real' });
+    this.wantDemo = wantDemo;
+    this._switching = true;
+    if (this.ws) {
+      this.ws.close();
+    } else {
+      this.connect();
+    }
   }
 
   _handleMessage(raw) {
@@ -105,9 +114,6 @@ class DerivClient extends EventEmitter {
       if (msg.error) reject(msg.error);
       else resolve(msg);
     }
-    // Emit regardless of whether req_id was pending — this is what lets
-    // subsequent pushes on a subscription (ticks, open-contract updates)
-    // reach listeners after the first response already resolved the promise.
     if (msg.msg_type) this.emit(msg.msg_type, msg);
   }
 
@@ -119,23 +125,18 @@ class DerivClient extends EventEmitter {
     });
   }
 
-  /** Subscribe to live tick stream for a symbol, e.g. 'R_100' for a Deriv synthetic index */
   subscribeTicks(symbol) {
     return this._send({ ticks: symbol, subscribe: 1 });
   }
 
-  /** Get a price quote for a proposed contract before buying */
   getProposal(params) {
-    // params: { contract_type, symbol, amount, duration, duration_unit, basis: 'stake' }
     return this._send({ proposal: 1, ...params });
   }
 
-  /** Execute a trade */
   buyContract(proposalId, price) {
     return this._send({ buy: proposalId, price });
   }
 
-  /** Close a still-open contract, e.g. on kill-switch or stop-loss trigger */
   sellContract(contractId, price = 0) {
     return this._send({ sell: contractId, price });
   }
@@ -144,12 +145,6 @@ class DerivClient extends EventEmitter {
     return this._send({ portfolio: 1 });
   }
 
-  /**
-   * Subscribe to updates for one open contract until it settles.
-   * Listen via deriv.on('proposal_open_contract', msg => ...) and check
-   * msg.proposal_open_contract.is_sold to know when it's finished, with
-   * .profit giving the realized P&L.
-   */
   subscribeContract(contractId) {
     return this._send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 });
   }
