@@ -6,7 +6,7 @@ const PriceFeed = require('./data/priceFeed');
 const RiskManager = require('./risk/riskManager');
 const { TrialManager } = require('./trials/trialManager');
 const { startControlServer, listen } = require('./killswitch/killSwitch');
-const { logEvent } = require('./logging/decisionLog');
+const { logEvent, onEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
 const { sendWhatsAppMessage } = require('./notifications/whatsapp');
 const { scheduleDailySummary } = require('./notifications/dailySummary');
@@ -93,6 +93,35 @@ async function main() {
 
   scheduleDailySummary({ trialManager, riskManager });
 
+  // Forward real problems straight to WhatsApp so they surface immediately —
+  // paste the message back to Claude to get it diagnosed and fixed. Deliberately
+  // excludes routine/expected events (auth_failed already sends its own alert;
+  // daily_loss_limit_hit and manual halts are working-as-intended, not bugs).
+  const ALERT_EVENT_TYPES = new Set([
+    'trade_entry_failed',
+    'connect_url_failed',
+    'deriv_otp_failed',
+    'deriv_accounts_fetch_failed',
+    'ws_error',
+    'unhandled_rejection',
+    'no_matching_account',
+    'no_token_available',
+    'position_recheck_failed',
+  ]);
+  const lastAlertSentAt = new Map(); // per-type cooldown so a repeating error doesn't flood WhatsApp
+  const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+
+  onEvent((record) => {
+    if (!ALERT_EVENT_TYPES.has(record.type)) return;
+    const last = lastAlertSentAt.get(record.type) || 0;
+    if (Date.now() - last < ALERT_COOLDOWN_MS) return; // already alerted recently, skip
+    lastAlertSentAt.set(record.type, Date.now());
+
+    let detail = JSON.stringify(record);
+    if (detail.length > 800) detail = detail.slice(0, 800) + '…';
+    sendWhatsAppMessage(`🐛 Trading server error: ${record.type}\n\n${detail}\n\nSend this to Claude to fix.`);
+  });
+
   const strategies = [exampleRsiStrategy()];
   strategies.forEach((s) => trialManager.startTrial(s.id));
 
@@ -147,3 +176,4 @@ main().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
 });
+        
