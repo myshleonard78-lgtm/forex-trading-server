@@ -2,20 +2,20 @@ require('dotenv').config();
 
 module.exports = {
   deriv: {
-    appId: process.env.DERIV_APP_ID, // your alphanumeric App ID from developers.deriv.com
-    // PAT (Personal Access Token) from app.deriv.com/account/api-token — the
-    // supported auth method for the new API that doesn't expire hourly like
-    // OAuth access tokens do. Generate one against your DEMO account.
+    appId: process.env.DERIV_APP_ID,
     token: process.env.DERIV_API_TOKEN || null,
-    // New API base — REST for account discovery + OTP, WS reached via a
-    // per-account OTP URL (see src/execution/derivAccounts.js)
     restBase: process.env.DERIV_REST_BASE || 'https://api.derivws.com/trading/v1/options',
   },
-  mode: process.env.TRADING_MODE || 'demo', // 'demo' | 'live'
+  mode: process.env.TRADING_MODE || 'demo',
   risk: {
     liveStartBalance: Number(process.env.LIVE_ACCOUNT_START_BALANCE || 10),
-    dailyLossLimit: Number(process.env.LIVE_DAILY_LOSS_LIMIT || 2),
-    riskPerTradePct: Number(process.env.RISK_PER_TRADE_PCT || 0.75), // % of balance risked per trade
+    // Live: fixed dollar cap, exactly as agreed — real money stays protected.
+    liveDailyLossLimit: Number(process.env.LIVE_DAILY_LOSS_LIMIT || 2),
+    // Demo: a % of the (much larger) demo balance instead of the live $ figure —
+    // it's not real money, and the trial needs enough daily trade volume to
+    // reach the 40-trade minimum in a reasonable time.
+    demoDailyLossLimitPct: Number(process.env.DEMO_DAILY_LOSS_LIMIT_PCT || 5),
+    riskPerTradePct: Number(process.env.RISK_PER_TRADE_PCT || 0.75),
   },
   gate: {
     minTrades: Number(process.env.MIN_TRADES_FOR_EVAL || 40),
@@ -36,7 +36,6 @@ module.exports = {
   whatsapp: {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || null,
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || null,
-    // Your own number to send alerts TO (include country code, no +, e.g. 2547XXXXXXXX)
     recipientNumber: process.env.WHATSAPP_RECIPIENT_NUMBER || null,
   },
 };
