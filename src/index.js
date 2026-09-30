@@ -115,8 +115,12 @@ async function main() {
     });
   }, 24 * 60 * 60 * 1000);
 
+  // Created once, before any connection happens, so hasOpenPosition and
+  // other executor state survives reconnects rather than resetting.
   const priceFeed = new PriceFeed();
-  let executorsStarted = false;
+  const executors = strategies.map(
+    (strategy) => new TradeExecutor({ strategy, deriv, priceFeed, riskManager, trialManager })
+  );
 
   deriv.on('connected', () => {
     if (riskManager.haltedForAuthIssue) {
@@ -124,19 +128,15 @@ async function main() {
       sendWhatsAppMessage('✅ Reconnected to Deriv — trading resumed automatically.');
     }
 
-    if (executorsStarted) return;
-    executorsStarted = true;
-
-    strategies.forEach((strategy) => {
-      const executor = new TradeExecutor({
-        strategy,
-        deriv,
-        priceFeed,
-        riskManager,
-        trialManager,
-      });
+    // Safe to call every time: re-subscribes ticks on the fresh connection,
+    // but only registers each executor's signal listener once ever.
+    executors.forEach((executor) => {
       executor.start();
-      logEvent({ type: 'executor_started', strategyId: strategy.id, symbol: strategy.symbol });
+      logEvent({
+        type: 'executor_started',
+        strategyId: executor.strategy.id,
+        symbol: executor.strategy.symbol,
+      });
     });
   });
 
