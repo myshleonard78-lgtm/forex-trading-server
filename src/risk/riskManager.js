@@ -1,16 +1,24 @@
-const config = require('../config');
 const { logEvent } = require('../logging/decisionLog');
 
 /**
  * All trade-permission decisions run through here first.
+ *
+ * dailyLossLimit is passed in (not read from a single global config) because
+ * it differs between demo and live: live uses the fixed $2 cap agreed on;
+ * demo uses a percentage of the (much larger) demo balance, since it's not
+ * real money and the goal is gathering enough trades quickly, not protecting
+ * capital. See index.js for how each is computed.
  */
 class RiskManager {
-  constructor(startingBalance) {
+  constructor(startingBalance, dailyLossLimit, riskPerTradePct) {
     this.balance = startingBalance;
     this.dayStartBalance = startingBalance;
     this.dayKey = this._todayKey();
     this.halted = false;
-    this.haltedForAuthIssue = false; // true only when halted due to a Deriv connection problem, not a manual/user halt — lets us auto-resume once reconnected
+    this.haltedForAuthIssue = false;
+    this.dailyLossLimit = dailyLossLimit;
+    this.riskPerTradePct = riskPerTradePct;
+    this._loggedDailyLimitHitToday = false;
   }
 
   _todayKey() {
@@ -22,6 +30,7 @@ class RiskManager {
     if (today !== this.dayKey) {
       this.dayKey = today;
       this.dayStartBalance = this.balance;
+      this._loggedDailyLimitHitToday = false;
       logEvent({ type: 'daily_reset', balance: this.balance });
     }
   }
@@ -39,8 +48,11 @@ class RiskManager {
   canTrade() {
     if (this.halted) return false;
     this._rolloverDayIfNeeded();
-    if (this.todaysLoss() >= config.risk.dailyLossLimit) {
-      logEvent({ type: 'daily_loss_limit_hit', loss: this.todaysLoss() });
+    if (this.todaysLoss() >= this.dailyLossLimit) {
+      if (!this._loggedDailyLimitHitToday) {
+        logEvent({ type: 'daily_loss_limit_hit', loss: this.todaysLoss(), limit: this.dailyLossLimit });
+        this._loggedDailyLimitHitToday = true; // log once per day, not on every tick
+      }
       return false;
     }
     return true;
@@ -48,10 +60,16 @@ class RiskManager {
 
   /** Stake size for the next trade — rounded to 2 decimals, since Deriv rejects finer amounts */
   getPositionSize() {
-    const raw = this.balance * (config.risk.riskPerTradePct / 100);
-    const remainingDailyAllowance = config.risk.dailyLossLimit - this.todaysLoss();
+    const raw = this.balance * (this.riskPerTradePct / 100);
+    const remainingDailyAllowance = this.dailyLossLimit - this.todaysLoss();
     const capped = Math.max(0, Math.min(raw, remainingDailyAllowance));
-    return Math.floor(capped * 100) / 100; // floor, not round, so we never exceed the allowance
+    return Math.floor(capped * 100) / 100;
+  }
+
+  /** Called when switching between demo/live, or if the demo balance moves meaningfully */
+  setDailyLossLimit(limit) {
+    this.dailyLossLimit = limit;
+    logEvent({ type: 'daily_loss_limit_updated', limit });
   }
 
   haltTrading(reason) {
@@ -60,7 +78,6 @@ class RiskManager {
     logEvent({ type: 'manual_halt', reason });
   }
 
-  /** Halt specifically due to a Deriv connection/auth problem — recoverable automatically */
   haltForAuthIssue(reason) {
     this.halted = true;
     this.haltedForAuthIssue = true;
