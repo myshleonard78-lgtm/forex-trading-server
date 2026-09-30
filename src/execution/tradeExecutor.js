@@ -19,24 +19,34 @@ class TradeExecutor {
     this.hasOpenPosition = false;
   }
 
+  /**
+   * Safe to call on every reconnect, not just once: the 'tick' listener is
+   * only ever registered a single time (it lives on the long-lived
+   * EventEmitter and survives reconnects), but the actual Deriv-side
+   * subscription is re-sent every time, since a fresh WebSocket connection
+   * doesn't remember subscriptions from the previous one.
+   */
   async start() {
+    if (!this._listenerRegistered) {
+      this.deriv.on('tick', async (msg) => {
+        if (!msg.tick || msg.tick.symbol !== this.strategy.symbol) return;
+
+        this.priceFeed.addTick(this.strategy.symbol, Number(msg.tick.quote));
+
+        if (this.hasOpenPosition) return;
+
+        const marketData = this.priceFeed.getMarketData(this.strategy.symbol);
+        if (!marketData) return;
+
+        const signal = this.strategy.signal(marketData);
+        if (signal === 'hold') return;
+
+        await this._tryEnterTrade(signal);
+      });
+      this._listenerRegistered = true;
+    }
+
     await this.deriv.subscribeTicks(this.strategy.symbol);
-
-    this.deriv.on('tick', async (msg) => {
-      if (!msg.tick || msg.tick.symbol !== this.strategy.symbol) return;
-
-      this.priceFeed.addTick(this.strategy.symbol, Number(msg.tick.quote));
-
-      if (this.hasOpenPosition) return;
-
-      const marketData = this.priceFeed.getMarketData(this.strategy.symbol);
-      if (!marketData) return;
-
-      const signal = this.strategy.signal(marketData);
-      if (signal === 'hold') return;
-
-      await this._tryEnterTrade(signal);
-    });
   }
 
   async _tryEnterTrade(signal) {
