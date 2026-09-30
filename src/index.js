@@ -11,6 +11,12 @@ const { exampleRsiStrategy } = require('./strategies/strategyBase');
 const { sendWhatsAppMessage } = require('./notifications/whatsapp');
 const { scheduleDailySummary } = require('./notifications/dailySummary');
 
+function computeDailyLossLimit(isDemo, balance) {
+  return isDemo
+    ? Math.round(balance * (config.risk.demoDailyLossLimitPct / 100) * 100) / 100
+    : config.risk.liveDailyLossLimit;
+}
+
 async function main() {
   let riskManagerRef = null;
 
@@ -21,8 +27,9 @@ async function main() {
 
   let currentIsDemo = config.mode !== 'live';
   const startingBalance = currentIsDemo ? 10000 : config.risk.liveStartBalance;
+  const initialDailyLossLimit = computeDailyLossLimit(currentIsDemo, startingBalance);
 
-  const riskManager = new RiskManager(startingBalance);
+  const riskManager = new RiskManager(startingBalance, initialDailyLossLimit, config.risk.riskPerTradePct);
   riskManagerRef = riskManager;
   const trialManager = new TrialManager();
 
@@ -51,10 +58,9 @@ async function main() {
   });
   deriv.connect();
 
-  // Switches the bot between the demo and real account. No new token is
-  // needed — one PAT sees both accounts; this just closes and reconnects
-  // against the other one's OTP. Also re-syncs the risk manager's balance
-  // to that account's real balance so daily-loss tracking starts correct.
+  // Switches the bot between the demo and real account. Re-syncs balance AND
+  // recomputes the daily loss limit for whichever account it's now on —
+  // demo gets a % of its (much larger) balance, live keeps the fixed $ cap.
   const switchMode = async (mode) => {
     const wantDemo = mode === 'demo';
     const token = getToken();
@@ -65,6 +71,7 @@ async function main() {
     currentIsDemo = wantDemo;
     riskManager.balance = balance;
     riskManager.dayStartBalance = balance;
+    riskManager.setDailyLossLimit(computeDailyLossLimit(wantDemo, balance));
     deriv.switchTarget(wantDemo);
 
     logEvent({ type: 'mode_switched', mode, balance });
