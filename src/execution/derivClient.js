@@ -63,6 +63,16 @@ class DerivClient extends EventEmitter {
       this.backoffMs = 1000;
       this.authorized = true;
       logEvent({ type: 'ws_connected', account: this.wantDemo ? 'demo' : 'real' });
+
+      // Deriv's WebSocket times out an idle connection — send a lightweight
+      // ping periodically to keep it alive between real requests. Without
+      // this the connection was dying and reconnecting roughly every 60s.
+      this._pingInterval = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this._send({ ping: 1 }).catch(() => {});
+        }
+      }, 30000);
+
       this.emit('connected');
 
       try {
@@ -77,6 +87,10 @@ class DerivClient extends EventEmitter {
     this.ws.on('close', () => {
       logEvent({ type: 'ws_closed', backoffMs: this.backoffMs });
       this.authorized = false;
+      if (this._pingInterval) {
+        clearInterval(this._pingInterval);
+        this._pingInterval = null;
+      }
       const delay = this._switching ? 500 : this.backoffMs;
       this._switching = false;
       setTimeout(() => this.connect(), delay);
