@@ -3,14 +3,14 @@ const { logEvent } = require('../logging/decisionLog');
 
 /**
  * All trade-permission decisions run through here first.
- * Nothing executes a trade without checking canTrade() and getPositionSize().
  */
 class RiskManager {
   constructor(startingBalance) {
     this.balance = startingBalance;
     this.dayStartBalance = startingBalance;
     this.dayKey = this._todayKey();
-    this.halted = false; // manual kill switch
+    this.halted = false;
+    this.haltedForAuthIssue = false; // true only when halted due to a Deriv connection problem, not a manual/user halt — lets us auto-resume once reconnected
   }
 
   _todayKey() {
@@ -26,19 +26,16 @@ class RiskManager {
     }
   }
 
-  /** Call after every closed trade to update balance and daily P&L tracking */
   recordTradeResult(pnl) {
     this.balance += pnl;
     this._rolloverDayIfNeeded();
   }
 
-  /** Today's realized loss so far, as a positive number (0 if in profit) */
   todaysLoss() {
     this._rolloverDayIfNeeded();
     return Math.max(0, this.dayStartBalance - this.balance);
   }
 
-  /** True if trading is currently allowed */
   canTrade() {
     if (this.halted) return false;
     this._rolloverDayIfNeeded();
@@ -49,21 +46,30 @@ class RiskManager {
     return true;
   }
 
-  /** Stake size for the next trade, based on % risk of current balance */
+  /** Stake size for the next trade — rounded to 2 decimals, since Deriv rejects finer amounts */
   getPositionSize() {
     const raw = this.balance * (config.risk.riskPerTradePct / 100);
-    // Never risk more than what's left of today's allowance
     const remainingDailyAllowance = config.risk.dailyLossLimit - this.todaysLoss();
-    return Math.max(0, Math.min(raw, remainingDailyAllowance));
+    const capped = Math.max(0, Math.min(raw, remainingDailyAllowance));
+    return Math.floor(capped * 100) / 100; // floor, not round, so we never exceed the allowance
   }
 
   haltTrading(reason) {
     this.halted = true;
+    this.haltedForAuthIssue = false;
     logEvent({ type: 'manual_halt', reason });
+  }
+
+  /** Halt specifically due to a Deriv connection/auth problem — recoverable automatically */
+  haltForAuthIssue(reason) {
+    this.halted = true;
+    this.haltedForAuthIssue = true;
+    logEvent({ type: 'auth_halt', reason });
   }
 
   resumeTrading() {
     this.halted = false;
+    this.haltedForAuthIssue = false;
     logEvent({ type: 'manual_resume' });
   }
 }
