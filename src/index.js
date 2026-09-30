@@ -35,10 +35,11 @@ async function main() {
 
   const onAuthFailed = (reason, err) => {
     logEvent({ type: 'auth_failed', reason, err });
-    riskManager.haltTrading(`deriv auth failed (${reason}) — check DERIV_API_TOKEN`);
+    riskManager.haltForAuthIssue(`deriv connection failed (${reason})`);
     sendWhatsAppMessage(
-      `⚠️ Trading halted: Deriv connection failed (${reason}). Check the DERIV_API_TOKEN ` +
-        `environment variable is set to a valid PAT.`
+      `⚠️ Trading paused: Deriv connection failed (${reason}). This may be a temporary ` +
+        `Deriv outage — trading will resume automatically once reconnected. If it doesn't, ` +
+        `check the DERIV_API_TOKEN environment variable.`
     );
   };
 
@@ -111,6 +112,11 @@ async function main() {
   let executorsStarted = false;
 
   deriv.on('connected', () => {
+    if (riskManager.haltedForAuthIssue) {
+      riskManager.resumeTrading();
+      sendWhatsAppMessage('✅ Reconnected to Deriv — trading resumed automatically.');
+    }
+
     if (executorsStarted) return;
     executorsStarted = true;
 
