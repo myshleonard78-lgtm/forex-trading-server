@@ -2,11 +2,14 @@ const { isInNewsBlackout } = require('../news/newsBlackout');
 const { logEvent } = require('../logging/decisionLog');
 
 /**
- * One TradeExecutor runs one strategy end-to-end: listens to ticks for its
- * symbol, feeds them through the price feed's indicators, asks the strategy
- * for a signal, and — if conditions allow — places and tracks a real trade.
+ * One TradeExecutor runs one strategy end-to-end.
  *
- * Allows only ONE open position per strategy at a time.
+ * Tracks open contracts as a Set rather than a single boolean — this lets it
+ * correctly recover from a restart that left multiple orphaned positions
+ * open on Deriv's side (every redeploy restarts the process, which forgets
+ * any in-flight trade even though it's still open on Deriv's books). Each
+ * orphan gets tracked to settlement and properly recorded; new entries stay
+ * blocked until ALL open contracts for this strategy have cleared.
  */
 class TradeExecutor {
   constructor({ strategy, deriv, priceFeed, riskManager, trialManager, defaultStake }) {
@@ -16,16 +19,14 @@ class TradeExecutor {
     this.riskManager = riskManager;
     this.trialManager = trialManager;
     this.defaultStake = defaultStake;
-    this.hasOpenPosition = false;
+    this.openContracts = new Set();
+    this._listenerRegistered = false;
   }
 
-  /**
-   * Safe to call on every reconnect, not just once: the 'tick' listener is
-   * only ever registered a single time (it lives on the long-lived
-   * EventEmitter and survives reconnects), but the actual Deriv-side
-   * subscription is re-sent every time, since a fresh WebSocket connection
-   * doesn't remember subscriptions from the previous one.
-   */
+  get hasOpenPosition() {
+    return this.openContracts.size > 0;
+  }
+
   async start() {
     if (!this._listenerRegistered) {
       this.deriv.on('tick', async (msg) => {
@@ -49,6 +50,19 @@ class TradeExecutor {
     await this.deriv.subscribeTicks(this.strategy.symbol);
   }
 
+  /**
+   * Resume tracking a contract that was already open before this process
+   * started (e.g. still open from before a redeploy). Safe to call for a
+   * contract already being tracked — it's a no-op in that case.
+   */
+  async resumeTracking(contractId) {
+    if (this.openContracts.has(contractId)) return;
+    logEvent({ type: 'resumed_tracking_orphaned_contract', strategyId: this.strategy.id, contractId });
+    this.openContracts.add(contractId);
+    await this.deriv.subscribeContract(contractId);
+    this._waitForSettlement(contractId);
+  }
+
   async _tryEnterTrade(signal) {
     if (!this.riskManager.canTrade()) {
       return;
@@ -62,12 +76,10 @@ class TradeExecutor {
     if (stake <= 0) return;
 
     try {
-      this.hasOpenPosition = true;
-
       const contractType = signal === 'buy' ? 'CALL' : 'PUT';
       const proposalRes = await this.deriv.getProposal({
         contract_type: contractType,
-        underlying_symbol: this.strategy.symbol, // renamed from 'symbol' in the new API
+        underlying_symbol: this.strategy.symbol,
         amount: stake,
         basis: 'stake',
         duration: 5,
@@ -78,6 +90,8 @@ class TradeExecutor {
       const proposal = proposalRes.proposal;
       const buyRes = await this.deriv.buyContract(proposal.id, proposal.ask_price);
       const contractId = buyRes.buy.contract_id;
+
+      this.openContracts.add(contractId);
 
       logEvent({
         type: 'trade_opened',
@@ -91,7 +105,6 @@ class TradeExecutor {
       this._waitForSettlement(contractId);
     } catch (err) {
       logEvent({ type: 'trade_entry_failed', strategyId: this.strategy.id, error: err });
-      this.hasOpenPosition = false;
     }
   }
 
@@ -112,7 +125,7 @@ class TradeExecutor {
         pnl,
       });
 
-      this.hasOpenPosition = false;
+      this.openContracts.delete(contractId);
       this.deriv.off('proposal_open_contract', handler);
     };
 
