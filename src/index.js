@@ -33,9 +33,23 @@ async function main() {
   riskManagerRef = riskManager;
   const trialManager = new TrialManager();
 
+  // Matches each open contract found on reconnect to the executor whose
+  // strategy trades that symbol, and resumes tracking it to settlement —
+  // otherwise a redeploy mid-trade orphans that contract forever (still
+  // open on Deriv's books, but invisible to our own bookkeeping).
   const reattachOpenPositions = async () => {
-    const positions = await deriv.getOpenPositions();
-    logEvent({ type: 'reconnect_position_check', positions });
+    const res = await deriv.getOpenPositions();
+    const contracts = (res.portfolio && res.portfolio.contracts) || [];
+    logEvent({ type: 'reconnect_position_check', count: contracts.length });
+
+    for (const contract of contracts) {
+      const executor = executors.find((e) => e.strategy.symbol === contract.underlying_symbol);
+      if (executor) {
+        await executor.resumeTracking(contract.contract_id);
+      } else {
+        logEvent({ type: 'orphaned_contract_no_matching_strategy', contract });
+      }
+    }
   };
 
   const getToken = () => config.deriv.token;
