@@ -2,15 +2,15 @@ const express = require('express');
 const config = require('../config');
 
 /**
- * Minimal HTTP control surface. Your WhatsApp bot (or you, directly) calls
- * these endpoints.
+ * Minimal HTTP control + data surface.
  *
  * POST /halt   { secret, reason }
  * POST /resume { secret }
  * POST /mode   { secret, mode: 'demo' | 'live' }
- * GET  /status
+ * GET  /status          — quick summary (balance, halted, mode)
+ * GET  /dashboard-data  — full snapshot for the web dashboard / chat bot
  */
-function startControlServer(riskManager, { onModeChange, getMode } = {}) {
+function startControlServer(riskManager, { onModeChange, getMode, getDashboardData } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -49,11 +49,27 @@ function startControlServer(riskManager, { onModeChange, getMode } = {}) {
       halted: riskManager.halted,
       balance: riskManager.balance,
       todaysLoss: riskManager.todaysLoss(),
+      dailyLossLimit: riskManager.dailyLossLimit,
       mode: getMode ? getMode() : undefined,
     });
   });
 
-  return app; // caller mounts additional routes before listen()
+  // Full snapshot for the web dashboard and the WhatsApp assistant — a GET
+  // with a query-string key instead of a POST body, since dashboards and
+  // simple fetches are easiest as plain GETs.
+  app.get('/dashboard-data', async (req, res) => {
+    if (req.query.key !== config.killSwitch.secret) {
+      return res.status(401).json({ error: 'invalid key' });
+    }
+    try {
+      const data = await getDashboardData();
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  return app;
 }
 
 function listen(app) {
