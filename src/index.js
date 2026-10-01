@@ -58,9 +58,6 @@ async function main() {
   });
   deriv.connect();
 
-  // Switches the bot between the demo and real account. Re-syncs balance AND
-  // recomputes the daily loss limit for whichever account it's now on —
-  // demo gets a % of its (much larger) balance, live keeps the fixed $ cap.
   const switchMode = async (mode) => {
     const wantDemo = mode === 'demo';
     const token = getToken();
@@ -78,9 +75,37 @@ async function main() {
     sendWhatsAppMessage(`🔁 Switched to ${mode.toUpperCase()} trading. Balance: $${balance}`);
   };
 
+  // Full snapshot for the dashboard + WhatsApp assistant: account state,
+  // live open positions (fetched fresh from Deriv), and every strategy's
+  // trial progress.
+  const getDashboardData = async () => {
+    let positions = [];
+    try {
+      const res = await deriv.getOpenPositions();
+      positions = (res.portfolio && res.portfolio.contracts) || [];
+    } catch (err) {
+      logEvent({ type: 'dashboard_positions_fetch_failed', error: String(err) });
+    }
+
+    return {
+      mode: currentIsDemo ? 'demo' : 'live',
+      connected: deriv.authorized,
+      halted: riskManager.halted,
+      haltedForAuthIssue: riskManager.haltedForAuthIssue,
+      balance: riskManager.balance,
+      todaysLoss: riskManager.todaysLoss(),
+      dailyLossLimit: riskManager.dailyLossLimit,
+      riskPerTradePct: riskManager.riskPerTradePct,
+      openPositions: positions,
+      strategies: trialManager.toSummaryList(),
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
   const controlApp = startControlServer(riskManager, {
     onModeChange: switchMode,
     getMode: () => (currentIsDemo ? 'demo' : 'live'),
+    getDashboardData,
   });
   listen(controlApp);
 
@@ -93,10 +118,6 @@ async function main() {
 
   scheduleDailySummary({ trialManager, riskManager });
 
-  // Forward real problems straight to WhatsApp so they surface immediately —
-  // paste the message back to Claude to get it diagnosed and fixed. Deliberately
-  // excludes routine/expected events (auth_failed already sends its own alert;
-  // daily_loss_limit_hit and manual halts are working-as-intended, not bugs).
   const ALERT_EVENT_TYPES = new Set([
     'trade_entry_failed',
     'connect_url_failed',
@@ -108,13 +129,13 @@ async function main() {
     'no_token_available',
     'position_recheck_failed',
   ]);
-  const lastAlertSentAt = new Map(); // per-type cooldown so a repeating error doesn't flood WhatsApp
+  const lastAlertSentAt = new Map();
   const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
   onEvent((record) => {
     if (!ALERT_EVENT_TYPES.has(record.type)) return;
     const last = lastAlertSentAt.get(record.type) || 0;
-    if (Date.now() - last < ALERT_COOLDOWN_MS) return; // already alerted recently, skip
+    if (Date.now() - last < ALERT_COOLDOWN_MS) return;
     lastAlertSentAt.set(record.type, Date.now());
 
     let detail = JSON.stringify(record);
@@ -144,8 +165,6 @@ async function main() {
     });
   }, 24 * 60 * 60 * 1000);
 
-  // Created once, before any connection happens, so hasOpenPosition and
-  // other executor state survives reconnects rather than resetting.
   const priceFeed = new PriceFeed();
   const executors = strategies.map(
     (strategy) => new TradeExecutor({ strategy, deriv, priceFeed, riskManager, trialManager })
@@ -157,15 +176,9 @@ async function main() {
       sendWhatsAppMessage('✅ Reconnected to Deriv — trading resumed automatically.');
     }
 
-    // Safe to call every time: re-subscribes ticks on the fresh connection,
-    // but only registers each executor's signal listener once ever.
     executors.forEach((executor) => {
       executor.start();
-      logEvent({
-        type: 'executor_started',
-        strategyId: executor.strategy.id,
-        symbol: executor.strategy.symbol,
-      });
+      logEvent({ type: 'executor_started', strategyId: executor.strategy.id, symbol: executor.strategy.symbol });
     });
   });
 
@@ -176,4 +189,3 @@ main().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
 });
-        
