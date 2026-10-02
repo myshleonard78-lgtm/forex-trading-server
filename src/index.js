@@ -1,6 +1,6 @@
 const config = require('./config');
 const DerivClient = require('./execution/derivClient');
-const TradeExecutor = require('./execution/tradeExecutor');
+const StrategyManager = require('./strategies/strategyManager');
 const { listAccounts, pickAccount } = require('./execution/derivAccounts');
 const PriceFeed = require('./data/priceFeed');
 const RiskManager = require('./risk/riskManager');
@@ -32,18 +32,15 @@ async function main() {
   const riskManager = new RiskManager(startingBalance, initialDailyLossLimit, config.risk.riskPerTradePct);
   riskManagerRef = riskManager;
   const trialManager = new TrialManager();
+  const priceFeed = new PriceFeed();
 
-  // Matches each open contract found on reconnect to the executor whose
-  // strategy trades that symbol, and resumes tracking it to settlement —
-  // otherwise a redeploy mid-trade orphans that contract forever (still
-  // open on Deriv's books, but invisible to our own bookkeeping).
   const reattachOpenPositions = async () => {
     const res = await deriv.getOpenPositions();
     const contracts = (res.portfolio && res.portfolio.contracts) || [];
     logEvent({ type: 'reconnect_position_check', count: contracts.length });
 
     for (const contract of contracts) {
-      const executor = executors.find((e) => e.strategy.symbol === contract.underlying_symbol);
+      const executor = strategyManager.findExecutorForSymbol(contract.underlying_symbol);
       if (executor) {
         await executor.resumeTracking(contract.contract_id);
       } else {
@@ -70,6 +67,9 @@ async function main() {
     onAuthFailed,
     wantDemo: currentIsDemo,
   });
+
+  const strategyManager = new StrategyManager({ deriv, priceFeed, riskManager, trialManager });
+
   deriv.connect();
 
   const switchMode = async (mode) => {
@@ -89,9 +89,6 @@ async function main() {
     sendWhatsAppMessage(`🔁 Switched to ${mode.toUpperCase()} trading. Balance: $${balance}`);
   };
 
-  // Full snapshot for the dashboard + WhatsApp assistant: account state,
-  // live open positions (fetched fresh from Deriv), and every strategy's
-  // trial progress.
   const getDashboardData = async () => {
     let positions = [];
     try {
@@ -116,32 +113,36 @@ async function main() {
     };
   };
 
+  const addStrategy = (definition) => {
+    if (!definition || !definition.id) throw new Error('definition.id is required');
+    strategyManager.addFromDefinition(definition);
+    sendWhatsAppMessage(`🧪 New strategy "${definition.id}" added and now testing on demo: ${definition.description || ''}`);
+  };
+
+  const removeStrategy = (id) => {
+    strategyManager.removeStrategy(id);
+    sendWhatsAppMessage(`🗑️ Strategy "${id}" removed.`);
+  };
+
   const controlApp = startControlServer(riskManager, {
     onModeChange: switchMode,
     getMode: () => (currentIsDemo ? 'demo' : 'live'),
     getDashboardData,
+    addStrategy,
+    removeStrategy,
   });
   listen(controlApp);
 
   if (!config.deriv.token) {
-    console.log(
-      'No DERIV_API_TOKEN set. Generate a PAT at app.deriv.com/account/api-token and set it ' +
-        'as an environment variable.'
-    );
+    console.log('No DERIV_API_TOKEN set. Generate a PAT at app.deriv.com/account/api-token.');
   }
 
   scheduleDailySummary({ trialManager, riskManager });
 
   const ALERT_EVENT_TYPES = new Set([
-    'trade_entry_failed',
-    'connect_url_failed',
-    'deriv_otp_failed',
-    'deriv_accounts_fetch_failed',
-    'ws_error',
-    'unhandled_rejection',
-    'no_matching_account',
-    'no_token_available',
-    'position_recheck_failed',
+    'trade_entry_failed', 'connect_url_failed', 'deriv_otp_failed',
+    'deriv_accounts_fetch_failed', 'ws_error', 'unhandled_rejection',
+    'no_matching_account', 'no_token_available', 'position_recheck_failed',
   ]);
   const lastAlertSentAt = new Map();
   const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -157,8 +158,7 @@ async function main() {
     sendWhatsAppMessage(`🐛 Trading server error: ${record.type}\n\n${detail}\n\nSend this to Claude to fix.`);
   });
 
-  const strategies = [exampleRsiStrategy()];
-  strategies.forEach((s) => trialManager.startTrial(s.id));
+  strategyManager.addStrategyObject(exampleRsiStrategy());
 
   setInterval(() => {
     const decisions = trialManager.evaluateAll();
@@ -171,29 +171,21 @@ async function main() {
             `send "switch to live" and I'll move it over.`
         );
       } else if (d.verdict === 'discard') {
+        strategyManager.removeStrategy(d.strategyId);
         sendWhatsAppMessage(
           `❌ Strategy "${d.strategyId}" was discarded (didn't meet the win rate/profit ` +
-            `factor bar, or hit the drawdown limit). No action needed on your end.`
+            `factor bar, or hit the drawdown limit) and has been removed.`
         );
       }
     });
   }, 24 * 60 * 60 * 1000);
-
-  const priceFeed = new PriceFeed();
-  const executors = strategies.map(
-    (strategy) => new TradeExecutor({ strategy, deriv, priceFeed, riskManager, trialManager })
-  );
 
   deriv.on('connected', () => {
     if (riskManager.haltedForAuthIssue) {
       riskManager.resumeTrading();
       sendWhatsAppMessage('✅ Reconnected to Deriv — trading resumed automatically.');
     }
-
-    executors.forEach((executor) => {
-      executor.start();
-      logEvent({ type: 'executor_started', strategyId: executor.strategy.id, symbol: executor.strategy.symbol });
-    });
+    strategyManager.startAll();
   });
 
   console.log(`Trading server started in ${config.mode} mode.`);
