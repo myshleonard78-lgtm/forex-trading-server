@@ -2,14 +2,10 @@ const { isInNewsBlackout } = require('../news/newsBlackout');
 const { logEvent } = require('../logging/decisionLog');
 
 /**
- * One TradeExecutor runs one strategy end-to-end.
- *
- * Tracks open contracts as a Set rather than a single boolean — this lets it
- * correctly recover from a restart that left multiple orphaned positions
- * open on Deriv's side (every redeploy restarts the process, which forgets
- * any in-flight trade even though it's still open on Deriv's books). Each
- * orphan gets tracked to settlement and properly recorded; new entries stay
- * blocked until ALL open contracts for this strategy have cleared.
+ * One TradeExecutor runs one strategy end-to-end. Tracks open contracts as a
+ * Set (not a boolean) so it correctly recovers from a restart that left
+ * positions open on Deriv's side. Can be stop()'d to remove a strategy
+ * cleanly (e.g. discarded by the trial gate, or removed via the dashboard).
  */
 class TradeExecutor {
   constructor({ strategy, deriv, priceFeed, riskManager, trialManager, defaultStake }) {
@@ -21,6 +17,8 @@ class TradeExecutor {
     this.defaultStake = defaultStake;
     this.openContracts = new Set();
     this._listenerRegistered = false;
+    this._stopped = false;
+    this._tickHandler = null;
   }
 
   get hasOpenPosition() {
@@ -29,7 +27,8 @@ class TradeExecutor {
 
   async start() {
     if (!this._listenerRegistered) {
-      this.deriv.on('tick', async (msg) => {
+      this._tickHandler = async (msg) => {
+        if (this._stopped) return;
         if (!msg.tick || msg.tick.symbol !== this.strategy.symbol) return;
 
         this.priceFeed.addTick(this.strategy.symbol, Number(msg.tick.quote));
@@ -43,18 +42,21 @@ class TradeExecutor {
         if (signal === 'hold') return;
 
         await this._tryEnterTrade(signal);
-      });
+      };
+      this.deriv.on('tick', this._tickHandler);
       this._listenerRegistered = true;
     }
 
     await this.deriv.subscribeTicks(this.strategy.symbol);
   }
 
-  /**
-   * Resume tracking a contract that was already open before this process
-   * started (e.g. still open from before a redeploy). Safe to call for a
-   * contract already being tracked — it's a no-op in that case.
-   */
+  /** Stops taking new trades. Existing open positions still settle and get recorded. */
+  stop() {
+    this._stopped = true;
+    if (this._tickHandler) this.deriv.off('tick', this._tickHandler);
+    logEvent({ type: 'executor_stopped', strategyId: this.strategy.id });
+  }
+
   async resumeTracking(contractId) {
     if (this.openContracts.has(contractId)) return;
     logEvent({ type: 'resumed_tracking_orphaned_contract', strategyId: this.strategy.id, contractId });
@@ -64,9 +66,7 @@ class TradeExecutor {
   }
 
   async _tryEnterTrade(signal) {
-    if (!this.riskManager.canTrade()) {
-      return;
-    }
+    if (!this.riskManager.canTrade()) return;
     if (await isInNewsBlackout(this.strategy.symbol)) {
       logEvent({ type: 'trade_skipped_news_blackout', strategyId: this.strategy.id });
       return;
@@ -92,14 +92,7 @@ class TradeExecutor {
       const contractId = buyRes.buy.contract_id;
 
       this.openContracts.add(contractId);
-
-      logEvent({
-        type: 'trade_opened',
-        strategyId: this.strategy.id,
-        contractId,
-        signal,
-        stake,
-      });
+      logEvent({ type: 'trade_opened', strategyId: this.strategy.id, contractId, signal, stake });
 
       await this.deriv.subscribeContract(contractId);
       this._waitForSettlement(contractId);
@@ -118,12 +111,7 @@ class TradeExecutor {
       this.riskManager.recordTradeResult(pnl);
       this.trialManager.recordTrade(this.strategy.id, pnl);
 
-      logEvent({
-        type: 'trade_closed',
-        strategyId: this.strategy.id,
-        contractId,
-        pnl,
-      });
+      logEvent({ type: 'trade_closed', strategyId: this.strategy.id, contractId, pnl });
 
       this.openContracts.delete(contractId);
       this.deriv.off('proposal_open_contract', handler);
@@ -134,3 +122,4 @@ class TradeExecutor {
 }
 
 module.exports = TradeExecutor;
+2
