@@ -4,13 +4,15 @@ const config = require('../config');
 /**
  * Minimal HTTP control + data surface.
  *
- * POST /halt   { secret, reason }
- * POST /resume { secret }
- * POST /mode   { secret, mode: 'demo' | 'live' }
- * GET  /status          — quick summary (balance, halted, mode)
- * GET  /dashboard-data  — full snapshot for the web dashboard / chat bot
+ * POST   /halt       { secret, reason }
+ * POST   /resume      { secret }
+ * POST   /mode       { secret, mode: 'demo' | 'live' }
+ * POST   /strategies { secret, definition }  — add a new strategy at runtime
+ * DELETE /strategies/:id { secret }          — remove a strategy
+ * GET    /status
+ * GET    /dashboard-data?key=...
  */
-function startControlServer(riskManager, { onModeChange, getMode, getDashboardData } = {}) {
+function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -44,6 +46,24 @@ function startControlServer(riskManager, { onModeChange, getMode, getDashboardDa
     }
   });
 
+  app.post('/strategies', checkSecret, (req, res) => {
+    try {
+      addStrategy(req.body.definition);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  app.delete('/strategies/:id', checkSecret, (req, res) => {
+    try {
+      removeStrategy(req.params.id);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
   app.get('/status', (req, res) => {
     res.json({
       halted: riskManager.halted,
@@ -54,9 +74,6 @@ function startControlServer(riskManager, { onModeChange, getMode, getDashboardDa
     });
   });
 
-  // Full snapshot for the web dashboard and the WhatsApp assistant — a GET
-  // with a query-string key instead of a POST body, since dashboards and
-  // simple fetches are easiest as plain GETs.
   app.get('/dashboard-data', async (req, res) => {
     if (req.query.key !== config.killSwitch.secret) {
       return res.status(401).json({ error: 'invalid key' });
