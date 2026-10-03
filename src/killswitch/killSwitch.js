@@ -12,7 +12,7 @@ const config = require('../config');
  * GET    /status
  * GET    /dashboard-data?key=...
  */
-function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy } = {}) {
+function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy, getTickData, getDigitStats } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -72,6 +72,33 @@ function startControlServer(riskManager, { onModeChange, getMode, getDashboardDa
       dailyLossLimit: riskManager.dailyLossLimit,
       mode: getMode ? getMode() : undefined,
     });
+  });
+
+  // Recent price history for a symbol — powers the Strategy Builder's
+  // live Rise/Fall chart.
+  app.get('/market/ticks', async (req, res) => {
+    if (req.query.key !== config.killSwitch.secret) return res.status(401).json({ error: 'invalid key' });
+    try {
+      const symbol = req.query.symbol || 'R_100';
+      const count = Math.min(Number(req.query.count) || 100, 1000);
+      const data = await getTickData(symbol, count);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Last-digit frequency breakdown — powers the digit-contract circles.
+  app.get('/market/digit-stats', async (req, res) => {
+    if (req.query.key !== config.killSwitch.secret) return res.status(401).json({ error: 'invalid key' });
+    try {
+      const symbol = req.query.symbol || 'R_100';
+      const count = Math.min(Number(req.query.count) || 1000, 1000);
+      const data = await getDigitStats(symbol, count);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   app.get('/dashboard-data', async (req, res) => {
