@@ -8,6 +8,7 @@ const { TrialManager } = require('./trials/trialManager');
 const { startControlServer, listen } = require('./killswitch/killSwitch');
 const { logEvent, onEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
+const { computeDigitStats } = require('./market/digitStats');
 const { sendWhatsAppMessage } = require('./notifications/whatsapp');
 const { scheduleDailySummary } = require('./notifications/dailySummary');
 
@@ -124,12 +125,26 @@ async function main() {
     sendWhatsAppMessage(`🗑️ Strategy "${id}" removed.`);
   };
 
+  const getTickData = async (symbol, count) => {
+    const res = await deriv.getTickHistory(symbol, count);
+    const prices = (res.history && res.history.prices) || [];
+    return { symbol, prices };
+  };
+
+  const getDigitStats = async (symbol, count) => {
+    const res = await deriv.getTickHistory(symbol, count);
+    const prices = (res.history && res.history.prices) || [];
+    return { symbol, ...computeDigitStats(prices) };
+  };
+
   const controlApp = startControlServer(riskManager, {
     onModeChange: switchMode,
     getMode: () => (currentIsDemo ? 'demo' : 'live'),
     getDashboardData,
     addStrategy,
     removeStrategy,
+    getTickData,
+    getDigitStats,
   });
   listen(controlApp);
 
