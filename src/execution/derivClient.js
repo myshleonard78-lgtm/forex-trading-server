@@ -162,6 +162,11 @@ class DerivClient extends EventEmitter {
   subscribeContract(contractId) {
     return this._send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 });
   }
+
+  /** Recent price history for a symbol — used for charts and digit-frequency analysis */
+  getTickHistory(symbol, count = 100) {
+    return this._send({ ticks_history: symbol, count, end: 'latest', style: 'ticks' });
+  }
 }
 
 module.exports = DerivClient;
