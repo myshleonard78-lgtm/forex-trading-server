@@ -6,6 +6,7 @@ const PriceFeed = require('./data/priceFeed');
 const RiskManager = require('./risk/riskManager');
 const { TrialManager } = require('./trials/trialManager');
 const { startControlServer, listen } = require('./killswitch/killSwitch');
+const { initLiveMarketStreams } = require('./market/liveMarketStreams');
 const { logEvent, onEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
 const { computeDigitStats, detectDecimals } = require('./market/digitStats');
@@ -73,6 +74,10 @@ async function main() {
   const strategyManager = new StrategyManager({ deriv, priceFeed, riskManager, trialManager });
 
   deriv.connect();
+
+  // Always-warm rolling windows for every known symbol, fed off the real
+  // tick stream — this is what the live /market/stream endpoint reads from.
+  const { getWindow: getLiveWindow } = initLiveMarketStreams(deriv);
 
   const switchMode = async (mode) => {
     const wantDemo = mode === 'demo';
@@ -178,6 +183,8 @@ async function main() {
     getDigitStats,
     runBacktest,
     runBacktestAllMarkets,
+    deriv,
+    getLiveWindow,
   });
   listen(controlApp);
 
