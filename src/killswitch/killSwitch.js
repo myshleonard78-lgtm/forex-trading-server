@@ -12,7 +12,7 @@ const config = require('../config');
  * GET    /status
  * GET    /dashboard-data?key=...
  */
-function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy, getTickData, getDigitStats, runBacktest } = {}) {
+function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy, getTickData, getDigitStats, runBacktest, runBacktestAllMarkets } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -61,6 +61,16 @@ function startControlServer(riskManager, { onModeChange, getMode, getDashboardDa
     try {
       const result = await runBacktest(req.body.definition);
       res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  // Same rule, tested against every symbol — ranked by backtested win rate.
+  app.post('/strategies/backtest-all', checkSecret, async (req, res) => {
+    try {
+      const results = await runBacktestAllMarkets(req.body.definition);
+      res.json({ results });
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
@@ -134,4 +144,3 @@ function listen(app) {
 }
 
 module.exports = { startControlServer, listen };
-                                        
