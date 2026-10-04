@@ -45,7 +45,8 @@ function computeDigitStats(prices) {
     sorted[sorted.length - 1].rank = 'least';
   }
 
-  return { decimals, sampleSize: total, digits: stats };
+  return { decimals, sampleSize: total, digits: stats, lastPrice: prices[prices.length - 1] };
 }
 
 module.exports = { computeDigitStats, detectDecimals, lastDigitOf };
+  
