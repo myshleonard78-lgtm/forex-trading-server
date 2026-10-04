@@ -145,6 +145,28 @@ async function main() {
     return backtestDigitPattern(definition, prices);
   };
 
+  const ALL_SYMBOLS = ['R_10', '1HZ10V', 'R_25', '1HZ25V', 'R_50', '1HZ50V', 'R_75', '1HZ75V', 'R_100', '1HZ100V'];
+
+  // Runs the same rule against every symbol and ranks them by backtested
+  // win rate — answers "which market currently fits this rule best?"
+  // Sequential, not parallel: keeps it to one Deriv request in flight at a
+  // time, which is kinder to the single shared WebSocket connection.
+  const runBacktestAllMarkets = async (definition) => {
+    const results = [];
+    for (const symbol of ALL_SYMBOLS) {
+      try {
+        const res = await deriv.getTickHistory(symbol, 1000);
+        const prices = (res.history && res.history.prices) || [];
+        const result = backtestDigitPattern({ ...definition, symbol }, prices);
+        results.push({ symbol, ...result });
+      } catch (err) {
+        results.push({ symbol, error: String(err) });
+      }
+    }
+    results.sort((a, b) => (b.winRatePct || 0) - (a.winRatePct || 0));
+    return results;
+  };
+
   const controlApp = startControlServer(riskManager, {
     onModeChange: switchMode,
     getMode: () => (currentIsDemo ? 'demo' : 'live'),
@@ -154,6 +176,7 @@ async function main() {
     getTickData,
     getDigitStats,
     runBacktest,
+    runBacktestAllMarkets,
   });
   listen(controlApp);
 
@@ -219,3 +242,4 @@ main().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
 });
+      
