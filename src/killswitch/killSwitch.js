@@ -12,7 +12,7 @@ const config = require('../config');
  * GET    /status
  * GET    /dashboard-data?key=...
  */
-function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy, getTickData, getDigitStats, runBacktest, runBacktestAllMarkets } = {}) {
+function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy, getTickData, getDigitStats, runBacktest, runBacktestAllMarkets, deriv, getLiveWindow } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -95,6 +95,33 @@ function startControlServer(riskManager, { onModeChange, getMode, getDashboardDa
     });
   });
 
+  // True real-time stream: pushes every single tick the instant it arrives
+  // (Server-Sent Events), not polled on a timer. "Every tick matters."
+  app.get('/market/stream', (req, res) => {
+    if (req.query.key !== config.killSwitch.secret) return res.status(401).end();
+    const symbol = req.query.symbol || 'R_100';
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    const handler = (msg) => {
+      if (!msg.tick || msg.tick.symbol !== symbol) return;
+      const window = getLiveWindow(symbol);
+      const payload = {
+        price: Number(msg.tick.quote),
+        decimals: window ? window.decimals : 2,
+        digits: window ? window.computeRanks() : null,
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    deriv.on('tick', handler);
+    req.on('close', () => deriv.off('tick', handler));
+  });
+
   // Recent price history for a symbol — powers the Strategy Builder's
   // live Rise/Fall chart.
   app.get('/market/ticks', async (req, res) => {
@@ -144,3 +171,4 @@ function listen(app) {
 }
 
 module.exports = { startControlServer, listen };
+      
