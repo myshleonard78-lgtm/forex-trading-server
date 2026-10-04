@@ -8,7 +8,7 @@ const { TrialManager } = require('./trials/trialManager');
 const { startControlServer, listen } = require('./killswitch/killSwitch');
 const { logEvent, onEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
-const { computeDigitStats } = require('./market/digitStats');
+const { computeDigitStats, detectDecimals } = require('./market/digitStats');
 const { backtestDigitPattern } = require('./strategies/digitPatternBacktest');
 const { sendWhatsAppMessage } = require('./notifications/whatsapp');
 const { scheduleDailySummary } = require('./notifications/dailySummary');
@@ -129,7 +129,8 @@ async function main() {
   const getTickData = async (symbol, count) => {
     const res = await deriv.getTickHistory(symbol, count);
     const prices = (res.history && res.history.prices) || [];
-    return { symbol, prices };
+    const decimals = detectDecimals(prices);
+    return { symbol, prices, decimals };
   };
 
   const getDigitStats = async (symbol, count) => {
@@ -242,4 +243,3 @@ main().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
 });
-      
