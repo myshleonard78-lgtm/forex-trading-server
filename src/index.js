@@ -9,6 +9,7 @@ const { startControlServer, listen } = require('./killswitch/killSwitch');
 const { logEvent, onEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
 const { computeDigitStats } = require('./market/digitStats');
+const { backtestDigitPattern } = require('./strategies/digitPatternBacktest');
 const { sendWhatsAppMessage } = require('./notifications/whatsapp');
 const { scheduleDailySummary } = require('./notifications/dailySummary');
 
@@ -137,6 +138,13 @@ async function main() {
     return { symbol, ...computeDigitStats(prices) };
   };
 
+  const runBacktest = async (definition) => {
+    if (!definition || !definition.symbol) throw new Error('definition.symbol is required');
+    const res = await deriv.getTickHistory(definition.symbol, 1000);
+    const prices = (res.history && res.history.prices) || [];
+    return backtestDigitPattern(definition, prices);
+  };
+
   const controlApp = startControlServer(riskManager, {
     onModeChange: switchMode,
     getMode: () => (currentIsDemo ? 'demo' : 'live'),
@@ -145,6 +153,7 @@ async function main() {
     removeStrategy,
     getTickData,
     getDigitStats,
+    runBacktest,
   });
   listen(controlApp);
 
