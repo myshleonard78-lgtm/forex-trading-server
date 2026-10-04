@@ -12,7 +12,7 @@ const config = require('../config');
  * GET    /status
  * GET    /dashboard-data?key=...
  */
-function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy, getTickData, getDigitStats } = {}) {
+function startControlServer(riskManager, { onModeChange, getMode, getDashboardData, addStrategy, removeStrategy, getTickData, getDigitStats, runBacktest } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -50,6 +50,17 @@ function startControlServer(riskManager, { onModeChange, getMode, getDashboardDa
     try {
       addStrategy(req.body.definition);
       res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
+  // Preview a digit-pattern strategy against real recent history before
+  // committing it — no trade is placed, nothing is added to the trial pool.
+  app.post('/strategies/backtest', checkSecret, async (req, res) => {
+    try {
+      const result = await runBacktest(req.body.definition);
+      res.json(result);
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
@@ -123,3 +134,4 @@ function listen(app) {
 }
 
 module.exports = { startControlServer, listen };
+                                        
