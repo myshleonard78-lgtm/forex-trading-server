@@ -1,11 +1,13 @@
 const TradeExecutor = require('../execution/tradeExecutor');
+const DigitPatternExecutor = require('../execution/digitPatternExecutor');
 const { makeRuleStrategy } = require('./ruleStrategy');
 const { logEvent } = require('../logging/decisionLog');
 
 /**
  * Owns the live set of strategies: creates an executor + trial for each,
- * and can add/remove strategies at runtime (e.g. from the dashboard) without
- * a redeploy.
+ * and can add/remove strategies at runtime without a redeploy. Supports two
+ * executor kinds — indicator-threshold (TradeExecutor) and digit-pattern
+ * (DigitPatternExecutor) — behind one common add/remove/start interface.
  */
 class StrategyManager {
   constructor({ deriv, priceFeed, riskManager, trialManager }) {
@@ -13,7 +15,7 @@ class StrategyManager {
     this.priceFeed = priceFeed;
     this.riskManager = riskManager;
     this.trialManager = trialManager;
-    this.executors = new Map(); // id -> TradeExecutor
+    this.executors = new Map(); // id -> executor (TradeExecutor | DigitPatternExecutor)
   }
 
   /** Register a strategy object directly (used at startup for hand-written strategies) */
@@ -25,20 +27,36 @@ class StrategyManager {
       riskManager: this.riskManager,
       trialManager: this.trialManager,
     });
-    this.executors.set(strategy.id, executor);
-    this.trialManager.startTrial(strategy.id);
-    if (this.deriv.authorized) executor.start();
-    logEvent({ type: 'strategy_added', strategyId: strategy.id, symbol: strategy.symbol });
+    this._register(strategy.id, strategy.symbol, executor);
     return executor;
   }
 
-  /** Add a strategy from a plain-data definition (e.g. from the dashboard's strategy chat) */
+  /** Add a strategy from a plain-data definition. def.kind: 'rsi' (default) | 'digit-pattern' */
   addFromDefinition(def) {
     if (this.executors.has(def.id)) {
       throw new Error(`Strategy id "${def.id}" already exists`);
     }
+
+    if (def.kind === 'digit-pattern') {
+      const executor = new DigitPatternExecutor({
+        definition: def,
+        deriv: this.deriv,
+        riskManager: this.riskManager,
+        trialManager: this.trialManager,
+      });
+      this._register(def.id, def.symbol, executor);
+      return executor;
+    }
+
     const strategy = makeRuleStrategy(def);
     return this.addStrategyObject(strategy);
+  }
+
+  _register(id, symbol, executor) {
+    this.executors.set(id, executor);
+    this.trialManager.startTrial(id);
+    if (this.deriv.authorized) executor.start();
+    logEvent({ type: 'strategy_added', strategyId: id, symbol });
   }
 
   removeStrategy(id) {
@@ -49,12 +67,10 @@ class StrategyManager {
     logEvent({ type: 'strategy_removed', strategyId: id });
   }
 
-  /** Called once the Deriv connection is (re)established */
   startAll() {
     this.executors.forEach((executor) => executor.start());
   }
 
-  /** Match an open contract (from reconnect recovery) to its owning executor */
   findExecutorForSymbol(symbol) {
     return [...this.executors.values()].find((e) => e.strategy.symbol === symbol);
   }
