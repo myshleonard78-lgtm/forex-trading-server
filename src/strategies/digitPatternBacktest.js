@@ -1,4 +1,5 @@
 const { computeDigitStats } = require('../market/digitStats');
+const { losingDigitsUnderThreshold } = require('./digitPatternHelpers');
 
 /**
  * Replays a digit-pattern definition against historical ticks to estimate
@@ -28,6 +29,7 @@ function backtestDigitPattern(def, prices) {
 
   const barrierOk = rankSatisfies(rankByDigit[def.barrierDigit], def.barrierMustBe || 'any');
   const entryOk = (digit) => rankSatisfies(rankByDigit[digit], def.entryMustBe || 'any');
+  const losingDigitsOk = losingDigitsUnderThreshold(def.contractType, def.barrierDigit, def.maxLosingDigitPct, stats.digits);
 
   let armed = true;
   let wins = 0, losses = 0;
@@ -45,6 +47,7 @@ function backtestDigitPattern(def, prices) {
     if (!(def.entryDigits || []).includes(digit)) continue;
     if (!entryOk(digit)) continue;
     if (!barrierOk) continue;
+    if (!losingDigitsOk) continue;
 
     const priorDigit = digits[i - (def.priorDigitsBack || 1)];
     if ((def.excludeIfPriorDigitIn || []).includes(priorDigit)) continue;
@@ -79,4 +82,3 @@ function backtestDigitPattern(def, prices) {
 }
 
 module.exports = { backtestDigitPattern };
-    
