@@ -108,10 +108,16 @@ class TradeExecutor {
       if (!poc.is_sold) return;
 
       const pnl = Number(poc.profit);
+      const details = {
+        entrySpot: poc.entry_spot !== undefined ? Number(poc.entry_spot) : null,
+        exitSpot: poc.exit_spot !== undefined ? Number(poc.exit_spot) : (poc.sell_spot !== undefined ? Number(poc.sell_spot) : null),
+        stake: poc.buy_price !== undefined ? Number(poc.buy_price) : null,
+        contractType: poc.contract_type || null,
+      };
       this.riskManager.recordTradeResult(pnl);
-      this.trialManager.recordTrade(this.strategy.id, pnl);
+      this.trialManager.recordTrade(this.strategy.id, pnl, details);
 
-      logEvent({ type: 'trade_closed', strategyId: this.strategy.id, contractId, pnl });
+      logEvent({ type: 'trade_closed', strategyId: this.strategy.id, contractId, pnl, ...details });
 
       this.openContracts.delete(contractId);
       this.deriv.off('proposal_open_contract', handler);
@@ -122,4 +128,3 @@ class TradeExecutor {
 }
 
 module.exports = TradeExecutor;
-2
