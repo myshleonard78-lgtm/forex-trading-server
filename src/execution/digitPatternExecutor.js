@@ -141,8 +141,14 @@ class DigitPatternExecutor {
       if (!poc.is_sold) return;
 
       const pnl = Number(poc.profit);
+      const details = {
+        entrySpot: poc.entry_spot !== undefined ? Number(poc.entry_spot) : null,
+        exitSpot: poc.exit_spot !== undefined ? Number(poc.exit_spot) : (poc.sell_spot !== undefined ? Number(poc.sell_spot) : null),
+        stake: poc.buy_price !== undefined ? Number(poc.buy_price) : null,
+        contractType: poc.contract_type || null,
+      };
       this.riskManager.recordTradeResult(pnl);
-      this.trialManager.recordTrade(this.def.id, pnl);
+      this.trialManager.recordTrade(this.def.id, pnl, details);
 
       if (pnl > 0) {
         this.consecutiveLosses = 0;
@@ -154,7 +160,7 @@ class DigitPatternExecutor {
         }
       }
 
-      logEvent({ type: 'trade_closed', strategyId: this.def.id, contractId, pnl, consecutiveLosses: this.consecutiveLosses });
+      logEvent({ type: 'trade_closed', strategyId: this.def.id, contractId, pnl, consecutiveLosses: this.consecutiveLosses, ...details });
 
       this.openContracts.delete(contractId);
       this.deriv.off('proposal_open_contract', handler);
@@ -165,4 +171,4 @@ class DigitPatternExecutor {
 }
 
 module.exports = DigitPatternExecutor;
-                                                  
+        
