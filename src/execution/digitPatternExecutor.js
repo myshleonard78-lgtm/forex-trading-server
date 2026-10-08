@@ -1,4 +1,5 @@
 const { DigitWindow, rankSatisfies } = require('../market/digitWindow');
+const { losingDigitsUnderThreshold } = require('../strategies/digitPatternHelpers');
 const { logEvent } = require('../logging/decisionLog');
 
 /**
@@ -84,6 +85,14 @@ class DigitPatternExecutor {
     if (!rankSatisfies(barrierRank, this.def.barrierMustBe || 'any')) {
       logEvent({ type: 'pattern_entry_skipped_barrier_rank', strategyId: this.def.id, barrierDigit: this.def.barrierDigit, barrierRank });
       return;
+    }
+
+    if (this.def.maxLosingDigitPct) {
+      const currentStats = this.window.computeRanks(); // includes .pct per digit
+      if (!losingDigitsUnderThreshold(this.def.contractType, this.def.barrierDigit, this.def.maxLosingDigitPct, currentStats)) {
+        logEvent({ type: 'pattern_entry_skipped_losing_digit_pct', strategyId: this.def.id, maxLosingDigitPct: this.def.maxLosingDigitPct });
+        return;
+      }
     }
 
     if (priorDigit !== null && (this.def.excludeIfPriorDigitIn || []).includes(priorDigit)) {
