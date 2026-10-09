@@ -11,8 +11,8 @@ class StrategyTrial {
     this.status = 'active';
   }
 
-  recordTrade(pnl) {
-    this.trades.push({ pnl, timestamp: new Date() });
+  recordTrade(pnl, details = {}) {
+    this.trades.push({ pnl, timestamp: new Date(), ...details });
     this.runningBalance += pnl;
     this.peakBalance = Math.max(this.peakBalance, this.runningBalance);
   }
@@ -48,6 +48,23 @@ class StrategyTrial {
     return this.trades.filter((t) => t.timestamp.getTime() >= cutoff);
   }
 
+  /** Summary stats matching a typical broker "today's runs" panel */
+  todaysStats() {
+    const trades = this.todaysTrades();
+    const won = trades.filter((t) => t.pnl > 0);
+    const lost = trades.filter((t) => t.pnl <= 0);
+    const totalStake = trades.reduce((s, t) => s + (t.stake || 0), 0);
+    const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+    return {
+      runs: trades.length,
+      won: won.length,
+      lost: lost.length,
+      totalStake: Number(totalStake.toFixed(2)),
+      totalPayout: Number((totalStake + totalPnl).toFixed(2)),
+      totalPnl: Number(totalPnl.toFixed(2)),
+    };
+  }
+
   isDueForEvaluation(maxDaysAllowed) {
     return this.tradeCount >= config.gate.minTrades || this.daysRunning >= maxDaysAllowed;
   }
@@ -78,7 +95,15 @@ class StrategyTrial {
       gateMinTrades: config.gate.minTrades,
       gateMinWinRatePct: config.gate.minWinRatePct,
       gateMinProfitFactor: config.gate.minProfitFactor,
-      recentTrades: this.trades.slice(-20).map((t) => ({ pnl: t.pnl, timestamp: t.timestamp })),
+      recentTrades: this.trades.slice(-20).map((t) => ({
+        pnl: t.pnl,
+        timestamp: t.timestamp,
+        entrySpot: t.entrySpot ?? null,
+        exitSpot: t.exitSpot ?? null,
+        stake: t.stake ?? null,
+        contractType: t.contractType ?? null,
+      })),
+      today: this.todaysStats(),
     };
   }
 }
@@ -96,10 +121,10 @@ class TrialManager {
     return trial;
   }
 
-  recordTrade(strategyId, pnl) {
+  recordTrade(strategyId, pnl, details = {}) {
     const trial = this.trials.get(strategyId);
     if (!trial) throw new Error(`No active trial for ${strategyId}`);
-    trial.recordTrade(pnl);
+    trial.recordTrade(pnl, details);
   }
 
   evaluateAll() {
