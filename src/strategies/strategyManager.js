@@ -1,13 +1,15 @@
 const TradeExecutor = require('../execution/tradeExecutor');
 const DigitPatternExecutor = require('../execution/digitPatternExecutor');
+const AdaptiveDigitExecutor = require('../execution/adaptiveDigitExecutor');
 const { makeRuleStrategy } = require('./ruleStrategy');
 const { logEvent } = require('../logging/decisionLog');
 
 /**
  * Owns the live set of strategies: creates an executor + trial for each,
- * and can add/remove strategies at runtime without a redeploy. Supports two
- * executor kinds — indicator-threshold (TradeExecutor) and digit-pattern
- * (DigitPatternExecutor) — behind one common add/remove/start interface.
+ * and can add/remove strategies at runtime without a redeploy. Supports
+ * three executor kinds — indicator-threshold (TradeExecutor), fixed digit
+ * pattern (DigitPatternExecutor), and adaptive digit targeting
+ * (AdaptiveDigitExecutor) — behind one common add/remove/start interface.
  */
 class StrategyManager {
   constructor({ deriv, priceFeed, riskManager, trialManager }) {
@@ -31,7 +33,7 @@ class StrategyManager {
     return executor;
   }
 
-  /** Add a strategy from a plain-data definition. def.kind: 'rsi' (default) | 'digit-pattern' */
+  /** Add a strategy from a plain-data definition. def.kind: 'rsi' (default) | 'digit-pattern' | 'adaptive-digit' */
   addFromDefinition(def) {
     if (this.executors.has(def.id)) {
       throw new Error(`Strategy id "${def.id}" already exists`);
@@ -39,6 +41,17 @@ class StrategyManager {
 
     if (def.kind === 'digit-pattern') {
       const executor = new DigitPatternExecutor({
+        definition: def,
+        deriv: this.deriv,
+        riskManager: this.riskManager,
+        trialManager: this.trialManager,
+      });
+      this._register(def.id, def.symbol, executor);
+      return executor;
+    }
+
+    if (def.kind === 'adaptive-digit') {
+      const executor = new AdaptiveDigitExecutor({
         definition: def,
         deriv: this.deriv,
         riskManager: this.riskManager,
