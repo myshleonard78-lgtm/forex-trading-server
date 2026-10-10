@@ -11,6 +11,13 @@ const { logEvent, onEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
 const { computeDigitStats, detectDecimals } = require('./market/digitStats');
 const { backtestDigitPattern } = require('./strategies/digitPatternBacktest');
+const { backtestAdaptiveDigit } = require('./strategies/adaptiveDigitBacktest');
+
+function runAppropriateBacktest(definition, prices) {
+  return definition.kind === 'adaptive-digit'
+    ? backtestAdaptiveDigit(definition, prices)
+    : backtestDigitPattern(definition, prices);
+}
 const { sendWhatsAppMessage } = require('./notifications/whatsapp');
 const { scheduleDailySummary } = require('./notifications/dailySummary');
 
@@ -148,7 +155,7 @@ async function main() {
     if (!definition || !definition.symbol) throw new Error('definition.symbol is required');
     const res = await deriv.getTickHistory(definition.symbol, 1000);
     const prices = (res.history && res.history.prices) || [];
-    return backtestDigitPattern(definition, prices);
+    return runAppropriateBacktest(definition, prices);
   };
 
   const ALL_SYMBOLS = ['R_10', '1HZ10V', 'R_25', '1HZ25V', 'R_50', '1HZ50V', 'R_75', '1HZ75V', 'R_100', '1HZ100V'];
@@ -163,7 +170,7 @@ async function main() {
       try {
         const res = await deriv.getTickHistory(symbol, 1000);
         const prices = (res.history && res.history.prices) || [];
-        const result = backtestDigitPattern({ ...definition, symbol }, prices);
+        const result = runAppropriateBacktest({ ...definition, symbol }, prices);
         results.push({ symbol, ...result });
       } catch (err) {
         results.push({ symbol, error: String(err) });
@@ -250,3 +257,4 @@ main().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
 });
+    
