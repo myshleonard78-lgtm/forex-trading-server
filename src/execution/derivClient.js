@@ -35,9 +35,11 @@ class DerivClient extends EventEmitter {
     this.wantDemo = wantDemo;
     this.authorized = false;
     this._switching = false; // suppresses normal backoff delay during a deliberate switch
+    this.subscribedSymbols = new Set(); // tracks ticks subscriptions on the CURRENT connection — makes subscribeTicks idempotent and avoids AlreadySubscribed errors when multiple strategies share a symbol
   }
 
   async connect() {
+    this.subscribedSymbols = new Set(); // a fresh WebSocket connection means a genuinely clean slate
     const token = this.getToken();
     if (!token) {
       logEvent({ type: 'no_token_available' });
@@ -139,8 +141,23 @@ class DerivClient extends EventEmitter {
     });
   }
 
+  /**
+   * Idempotent: multiple strategies trading the same symbol (or the live
+   * dashboard stream + a strategy both wanting it) used to each call this
+   * and race — the second one got rejected by Deriv with "AlreadySubscribed",
+   * which was going uncaught and triggering a full trading halt. Now a
+   * repeat call for a symbol already subscribed on this connection just
+   * resolves immediately instead of asking Deriv again.
+   */
   subscribeTicks(symbol) {
-    return this._send({ ticks: symbol, subscribe: 1 });
+    if (this.subscribedSymbols.has(symbol)) {
+      return Promise.resolve({ already_subscribed: true, symbol });
+    }
+    this.subscribedSymbols.add(symbol); // mark synchronously, before the request completes, to close the race window
+    return this._send({ ticks: symbol, subscribe: 1 }).catch((err) => {
+      this.subscribedSymbols.delete(symbol); // genuine failure — allow a retry later
+      throw err;
+    });
   }
 
   getProposal(params) {
