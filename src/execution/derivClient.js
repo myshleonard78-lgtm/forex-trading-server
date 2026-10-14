@@ -4,29 +4,12 @@ const config = require('../config');
 const { logEvent } = require('../logging/decisionLog');
 const { getConnectUrl } = require('./derivAccounts');
 
-/**
- * Thin wrapper around Deriv's new API (developers.deriv.com).
- *
- * Connection model: authenticates via a one-time password (OTP) baked into
- * the WebSocket URL, fetched fresh via REST (using a PAT) on every single
- * connect — OTPs are short-lived and single-use, so never cached across
- * reconnects.
- *
- * Trading message protocol (ticks, proposal, buy, proposal_open_contract,
- * sell) is the same JSON-RPC-style shape as the old API.
- */
 class DerivClient extends EventEmitter {
-  /**
-   * @param {Function} getToken - returns the PAT to use for account
-   *   discovery + OTP requests.
-   * @param {boolean} wantDemo - true for the demo account, false for real.
-   *   Mutable at runtime via switchTarget().
-   */
   constructor({ onOpenPositionsRecheck, getToken, onAuthFailed, wantDemo = true } = {}) {
     super();
     this.ws = null;
     this.reqId = 1;
-    this.pending = new Map(); // req_id -> {resolve, reject}
+    this.pending = new Map();
     this.backoffMs = 1000;
     this.maxBackoffMs = 60000;
     this.onOpenPositionsRecheck = onOpenPositionsRecheck || (async () => {});
@@ -34,12 +17,13 @@ class DerivClient extends EventEmitter {
     this.onAuthFailed = onAuthFailed || (() => {});
     this.wantDemo = wantDemo;
     this.authorized = false;
-    this._switching = false; // suppresses normal backoff delay during a deliberate switch
-    this.subscribedSymbols = new Set(); // tracks ticks subscriptions on the CURRENT connection — makes subscribeTicks idempotent and avoids AlreadySubscribed errors when multiple strategies share a symbol
+    this._switching = false;
+    this.subscribedSymbols = new Set();
   }
 
   async connect() {
     this.subscribedSymbols = new Set(); // a fresh WebSocket connection means a genuinely clean slate
+
     const token = this.getToken();
     if (!token) {
       logEvent({ type: 'no_token_available' });
@@ -66,9 +50,6 @@ class DerivClient extends EventEmitter {
       this.authorized = true;
       logEvent({ type: 'ws_connected', account: this.wantDemo ? 'demo' : 'real' });
 
-      // Deriv's WebSocket times out an idle connection — send a lightweight
-      // ping periodically to keep it alive between real requests. Without
-      // this the connection was dying and reconnecting roughly every 60s.
       this._pingInterval = setInterval(() => {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this._send({ ping: 1 }).catch(() => {});
@@ -104,11 +85,6 @@ class DerivClient extends EventEmitter {
     });
   }
 
-  /**
-   * Switch which account (demo/live) this client trades on. Closes the
-   * current connection so it reconnects fresh against the new account's
-   * OTP — no new token needed, since one PAT can see both accounts.
-   */
   switchTarget(wantDemo) {
     if (wantDemo === this.wantDemo) return;
     logEvent({ type: 'mode_switch_requested', to: wantDemo ? 'demo' : 'real' });
@@ -153,9 +129,9 @@ class DerivClient extends EventEmitter {
     if (this.subscribedSymbols.has(symbol)) {
       return Promise.resolve({ already_subscribed: true, symbol });
     }
-    this.subscribedSymbols.add(symbol); // mark synchronously, before the request completes, to close the race window
+    this.subscribedSymbols.add(symbol);
     return this._send({ ticks: symbol, subscribe: 1 }).catch((err) => {
-      this.subscribedSymbols.delete(symbol); // genuine failure — allow a retry later
+      this.subscribedSymbols.delete(symbol);
       throw err;
     });
   }
@@ -180,10 +156,10 @@ class DerivClient extends EventEmitter {
     return this._send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 });
   }
 
-  /** Recent price history for a symbol — used for charts and digit-frequency analysis */
   getTickHistory(symbol, count = 100) {
     return this._send({ ticks_history: symbol, count, end: 'latest', style: 'ticks' });
   }
 }
 
 module.exports = DerivClient;
+        
