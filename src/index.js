@@ -9,6 +9,7 @@ const { startControlServer, listen } = require('./killswitch/killSwitch');
 const { initLiveMarketStreams } = require('./market/liveMarketStreams');
 const { logEvent, onEvent } = require('./logging/decisionLog');
 const { exampleRsiStrategy } = require('./strategies/strategyBase');
+const db = require('./persistence/db');
 const { computeDigitStats, detectDecimals } = require('./market/digitStats');
 const { backtestDigitPattern } = require('./strategies/digitPatternBacktest');
 const { backtestAdaptiveDigit } = require('./strategies/adaptiveDigitBacktest');
@@ -160,10 +161,6 @@ async function main() {
 
   const ALL_SYMBOLS = ['R_10', '1HZ10V', 'R_25', '1HZ25V', 'R_50', '1HZ50V', 'R_75', '1HZ75V', 'R_100', '1HZ100V'];
 
-  // Runs the same rule against every symbol and ranks them by backtested
-  // win rate — answers "which market currently fits this rule best?"
-  // Sequential, not parallel: keeps it to one Deriv request in flight at a
-  // time, which is kinder to the single shared WebSocket connection.
   const runBacktestAllMarkets = async (definition) => {
     const results = [];
     for (const symbol of ALL_SYMBOLS) {
@@ -220,7 +217,48 @@ async function main() {
     sendWhatsAppMessage(`🐛 Trading server error: ${record.type}\n\n${detail}\n\nSend this to Claude to fix.`);
   });
 
-  strategyManager.addStrategyObject(exampleRsiStrategy());
+  // ─── Restore strategies + trial history from Supabase, so progress ──────
+  // survives restarts/redeploys instead of resetting to zero every time.
+  async function reloadPersistedStrategies() {
+    const saved = await db.loadActiveStrategies();
+    const savedIds = new Set(saved.map((s) => s.id));
+
+    for (const row of saved) {
+      const startedAt = new Date(row.created_at);
+      try {
+        if (row.kind === 'rsi') {
+          strategyManager.addStrategyObject(exampleRsiStrategy(), { skipPersist: true, startedAt });
+        } else {
+          strategyManager.addFromDefinition(row.definition, { skipPersist: true, startedAt });
+        }
+      } catch (err) {
+        logEvent({ type: 'strategy_reload_failed', strategyId: row.id, error: String(err) });
+        continue;
+      }
+
+      const trades = await db.loadTrades(row.id);
+      trades.forEach((t) => {
+        trialManager.replayTrade(
+          row.id,
+          Number(t.pnl),
+          {
+            entrySpot: t.entry_spot !== null ? Number(t.entry_spot) : null,
+            exitSpot: t.exit_spot !== null ? Number(t.exit_spot) : null,
+            stake: t.stake !== null ? Number(t.stake) : null,
+            contractType: t.contract_type,
+          },
+          new Date(t.created_at)
+        );
+      });
+      logEvent({ type: 'strategy_reloaded', strategyId: row.id, tradeCount: trades.length });
+    }
+
+    if (!savedIds.has('rsi-reversion-v1')) {
+      strategyManager.addStrategyObject(exampleRsiStrategy());
+    }
+  }
+
+  await reloadPersistedStrategies();
 
   setInterval(() => {
     const decisions = trialManager.evaluateAll();
@@ -233,7 +271,7 @@ async function main() {
             `send "switch to live" and I'll move it over.`
         );
       } else if (d.verdict === 'discard') {
-        strategyManager.removeStrategy(d.strategyId);
+        strategyManager.removeStrategy(d.strategyId, 'discarded');
         sendWhatsAppMessage(
           `❌ Strategy "${d.strategyId}" was discarded (didn't meet the win rate/profit ` +
             `factor bar, or hit the drawdown limit) and has been removed.`
@@ -257,4 +295,4 @@ main().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
 });
-    
+      
