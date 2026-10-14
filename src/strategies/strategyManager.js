@@ -3,6 +3,7 @@ const DigitPatternExecutor = require('../execution/digitPatternExecutor');
 const AdaptiveDigitExecutor = require('../execution/adaptiveDigitExecutor');
 const { makeRuleStrategy } = require('./ruleStrategy');
 const { logEvent } = require('../logging/decisionLog');
+const db = require('../persistence/db');
 
 /**
  * Owns the live set of strategies: creates an executor + trial for each,
@@ -10,6 +11,8 @@ const { logEvent } = require('../logging/decisionLog');
  * three executor kinds — indicator-threshold (TradeExecutor), fixed digit
  * pattern (DigitPatternExecutor), and adaptive digit targeting
  * (AdaptiveDigitExecutor) — behind one common add/remove/start interface.
+ * Persists every strategy's definition + trades to Supabase so progress
+ * survives restarts/redeploys instead of resetting to zero every time.
  */
 class StrategyManager {
   constructor({ deriv, priceFeed, riskManager, trialManager }) {
@@ -17,11 +20,10 @@ class StrategyManager {
     this.priceFeed = priceFeed;
     this.riskManager = riskManager;
     this.trialManager = trialManager;
-    this.executors = new Map(); // id -> executor (TradeExecutor | DigitPatternExecutor)
+    this.executors = new Map();
   }
 
-  /** Register a strategy object directly (used at startup for hand-written strategies) */
-  addStrategyObject(strategy) {
+  addStrategyObject(strategy, { skipPersist = false, startedAt } = {}) {
     const executor = new TradeExecutor({
       strategy,
       deriv: this.deriv,
@@ -29,14 +31,19 @@ class StrategyManager {
       riskManager: this.riskManager,
       trialManager: this.trialManager,
     });
-    this._register(strategy.id, strategy.symbol, executor);
+    if (!skipPersist) {
+      db.saveStrategy({ id: strategy.id, kind: 'rsi', definition: { symbol: strategy.symbol } });
+    }
+    this._register(strategy.id, strategy.symbol, executor, startedAt);
     return executor;
   }
 
-  /** Add a strategy from a plain-data definition. def.kind: 'rsi' (default) | 'digit-pattern' | 'adaptive-digit' */
-  addFromDefinition(def) {
+  addFromDefinition(def, { skipPersist = false, startedAt } = {}) {
     if (this.executors.has(def.id)) {
       throw new Error(`Strategy id "${def.id}" already exists`);
+    }
+    if (!skipPersist) {
+      db.saveStrategy({ id: def.id, kind: def.kind || 'rule', definition: def });
     }
 
     if (def.kind === 'digit-pattern') {
@@ -46,7 +53,7 @@ class StrategyManager {
         riskManager: this.riskManager,
         trialManager: this.trialManager,
       });
-      this._register(def.id, def.symbol, executor);
+      this._register(def.id, def.symbol, executor, startedAt);
       return executor;
     }
 
@@ -57,27 +64,28 @@ class StrategyManager {
         riskManager: this.riskManager,
         trialManager: this.trialManager,
       });
-      this._register(def.id, def.symbol, executor);
+      this._register(def.id, def.symbol, executor, startedAt);
       return executor;
     }
 
     const strategy = makeRuleStrategy(def);
-    return this.addStrategyObject(strategy);
+    return this.addStrategyObject(strategy, { skipPersist: true, startedAt });
   }
 
-  _register(id, symbol, executor) {
+  _register(id, symbol, executor, startedAt) {
     this.executors.set(id, executor);
-    this.trialManager.startTrial(id);
+    this.trialManager.startTrial(id, startedAt);
     if (this.deriv.authorized) executor.start();
     logEvent({ type: 'strategy_added', strategyId: id, symbol });
   }
 
-  removeStrategy(id) {
+  removeStrategy(id, status = 'removed') {
     const executor = this.executors.get(id);
     if (!executor) throw new Error(`No strategy with id "${id}"`);
     executor.stop();
     this.executors.delete(id);
-    logEvent({ type: 'strategy_removed', strategyId: id });
+    db.markStrategyStatus(id, status);
+    logEvent({ type: 'strategy_removed', strategyId: id, status });
   }
 
   startAll() {
@@ -90,3 +98,4 @@ class StrategyManager {
 }
 
 module.exports = StrategyManager;
+    
