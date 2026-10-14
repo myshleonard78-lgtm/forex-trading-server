@@ -1,5 +1,6 @@
 const config = require('../config');
 const { logEvent } = require('../logging/decisionLog');
+const db = require('../persistence/db');
 
 class StrategyTrial {
   constructor(strategyId) {
@@ -11,8 +12,8 @@ class StrategyTrial {
     this.status = 'active';
   }
 
-  recordTrade(pnl, details = {}) {
-    this.trades.push({ pnl, timestamp: new Date(), ...details });
+  recordTrade(pnl, details = {}, timestamp = new Date()) {
+    this.trades.push({ pnl, timestamp, ...details });
     this.runningBalance += pnl;
     this.peakBalance = Math.max(this.peakBalance, this.runningBalance);
   }
@@ -48,7 +49,6 @@ class StrategyTrial {
     return this.trades.filter((t) => t.timestamp.getTime() >= cutoff);
   }
 
-  /** Summary stats matching a typical broker "today's runs" panel */
   todaysStats() {
     const trades = this.todaysTrades();
     const won = trades.filter((t) => t.pnl > 0);
@@ -82,7 +82,6 @@ class StrategyTrial {
     return passes ? 'promote' : 'discard';
   }
 
-  /** Plain-object snapshot for the dashboard / API responses */
   toSummary() {
     return {
       strategyId: this.strategyId,
@@ -114,8 +113,9 @@ class TrialManager {
     this.trialStartedAt = new Date();
   }
 
-  startTrial(strategyId) {
+  startTrial(strategyId, startedAt) {
     const trial = new StrategyTrial(strategyId);
+    if (startedAt) trial.startedAt = startedAt;
     this.trials.set(strategyId, trial);
     logEvent({ type: 'trial_started', strategyId });
     return trial;
@@ -125,6 +125,13 @@ class TrialManager {
     const trial = this.trials.get(strategyId);
     if (!trial) throw new Error(`No active trial for ${strategyId}`);
     trial.recordTrade(pnl, details);
+    db.saveTrade(strategyId, pnl, details);
+  }
+
+  replayTrade(strategyId, pnl, details, timestamp) {
+    const trial = this.trials.get(strategyId);
+    if (!trial) throw new Error(`No active trial for ${strategyId}`);
+    trial.recordTrade(pnl, details, timestamp);
   }
 
   evaluateAll() {
@@ -153,10 +160,10 @@ class TrialManager {
       .sort((a, b) => b.profitFactor - a.profitFactor);
   }
 
-  /** All strategies' summaries — for the dashboard */
   toSummaryList() {
     return [...this.trials.values()].map((t) => t.toSummary());
   }
 }
 
 module.exports = { TrialManager, StrategyTrial };
+      
