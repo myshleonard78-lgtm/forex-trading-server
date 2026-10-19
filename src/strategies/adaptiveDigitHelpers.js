@@ -1,10 +1,5 @@
 const { getLosingDigits } = require('./digitPatternHelpers');
 
-/**
- * Scans candidate barriers and picks whichever currently gives the best
- * edge — i.e. its losing digits are colder than "fair" (10% each) by at
- * least minEdgePct. Returns null if nothing clears that bar.
- */
 function pickBestBarrier(direction, digitStats, minEdgePct, barrierRange) {
   const range = barrierRange || (direction === 'DIGITOVER' ? [0, 7] : [2, 9]);
   let best = null;
@@ -19,7 +14,6 @@ function pickBestBarrier(direction, digitStats, minEdgePct, barrierRange) {
   return best && best.edge >= minEdgePct ? best : null;
 }
 
-/** Picks the coldest or hottest digit as the Match/Differ target, if its deviation from fair (10%) clears minEdgePct */
 function pickTargetDigit(selection, digitStats, minEdgePct) {
   const sorted = [...digitStats].sort((a, b) => (selection === 'coldest' ? a.pct - b.pct : b.pct - a.pct));
   const target = sorted[0];
@@ -27,7 +21,6 @@ function pickTargetDigit(selection, digitStats, minEdgePct) {
   return edge >= minEdgePct ? { digit: target.digit, pct: target.pct, edge } : null;
 }
 
-/** Current even vs odd split, and which side is currently less frequent */
 function computeEvenOddSkew(digitStats) {
   const evenPct = digitStats.filter((d) => d.digit % 2 === 0).reduce((s, d) => s + d.pct, 0);
   const oddPct = digitStats.filter((d) => d.digit % 2 === 1).reduce((s, d) => s + d.pct, 0);
@@ -36,4 +29,18 @@ function computeEvenOddSkew(digitStats) {
   return { evenPct, oddPct, skew, lessFrequentSide };
 }
 
-module.exports = { pickBestBarrier, pickTargetDigit, computeEvenOddSkew };
+/**
+ * Splits digits into the "Under" group (0-4) and "Over" group (5-9) and
+ * reports which side currently dominates. Used for the group-threshold
+ * strategy style: trade a FIXED barrier (not a scanned optimal one) once
+ * one group's share crosses a threshold (e.g. 70%).
+ */
+function computeGroupSkew(digitStats) {
+  const underPct = digitStats.filter((d) => d.digit <= 4).reduce((s, d) => s + d.pct, 0);
+  const overPct = digitStats.filter((d) => d.digit >= 5).reduce((s, d) => s + d.pct, 0);
+  const skew = Math.abs(overPct - underPct);
+  const strongerSide = overPct > underPct ? 'over' : 'under';
+  return { underPct, overPct, skew, strongerSide };
+}
+
+module.exports = { pickBestBarrier, pickTargetDigit, computeEvenOddSkew, computeGroupSkew };
